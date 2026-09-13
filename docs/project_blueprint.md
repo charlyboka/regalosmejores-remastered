@@ -1317,7 +1317,7 @@ a hydration capacity of 7 200, and only enriched products are searchable. Now: `
 roughly **71% of the 30 240 token daily budget**, leaving headroom for `refresh_products` and
 `run_search_terms`. Throttle back down once the catalogue is large enough to tune against.
 
-### Phase 8 — Public site
+### Phase 8 — Public site ✅ DONE
 - Base layout, header with embedded simple-search component, footer, Tailwind design tokens.
 - `ProductCard` component with variants + all three CTAs.
 - Home, `/regalos/<slug>/`, hub pages, `/buscar/`, `/buscador-avanzado/` (+ results), legal pages.
@@ -1325,8 +1325,54 @@ roughly **71% of the 30 240 token daily budget**, leaving headroom for `refresh_
 - **Verify:** every page renders on mobile; Lighthouse performance ≥ 90; simple search redirects to
   a topic when it matches strongly.
 
+**Deviations from the plan, and why:**
+
+1. **`/go/<click_id>/` became `/go/<product_id>/?b=…&p=…&pos=…&t=…`.** The URL map as written
+   cannot exist: §8.3 has the redirect view *create* the `ClickEvent`, so its id does not exist at
+   the moment the href is rendered. The product id goes in the path, the event is created in the
+   view, and the id it receives is what lands in the `ascsubtag`. No open-redirect surface: the
+   destination is built from settings plus the product's own ASIN, never from request data.
+2. **Click tracking shipped in Phase 8, not Phase 9.** Every card CTA needs a working `/go/`
+   target, so building the cards without it would have meant shipping dead links and rewriting
+   every template a phase later. Phase 9 keeps `PageView`, `UserQuery` and `QueryDemand`.
+3. **`with_summaries(products)` bulk-loads the SUMMARY facet.** The obvious implementation is a
+   property on `Product`, but that is one query per card — 24 per page. The helper does one query
+   for the whole page and sets `_gift_summary`; `Product.gift_summary` reads it and is
+   deliberately *not* lazy, so an N+1 shows up as a blank line rather than as a slow page.
+4. **Advanced search uses Post/Redirect/Get** with the slots held in the session, instead of
+   encoding them in the query string. Reloading results never resubmits, and the unbounded
+   combinatorial URL space never becomes crawlable in the first place.
+5. **Hub routes are declared before `regalos/<slug:slug>/`.** Otherwise `ocasiones` resolves as a
+   topic slug and the hubs 404. This also means those four words are permanently reserved and must
+   never be issued as topic slugs.
+6. **JSON-LD is assembled in Python (`apps/web/seo.py`), not written in templates.** A stray quote
+   in a product title silently invalidates a hand-written block, and Search Console reports it only
+   as "parsing error" with no page attribution. Serialising a dict cannot emit invalid JSON. We
+   emit `ItemList`, never `Product`: `Product` markup wants `offers.price`, and §1 says we have no
+   price to give.
+7. **No cookie banner.** The site sets only the session and CSRF cookies, both strictly necessary
+   under art. 22.2 LSSI-CE, so no prior consent is required. This holds only as long as no
+   third-party analytics or ad script is ever added.
+8. **The four legal templates carry `[PENDIENTE: …]` markers** for the operator's identity, NIF,
+   address and contact email. These are a legal requirement (art. 10 LSSI-CE) and **must be filled
+   before the site is opened to the public in Phase 10.**
+
+**Live verification (dev, against PROD DB):** all 17 routes return their expected status
+(`/no-existe/` → 404, everything else 200). `/go/` writes a `ClickEvent` and 302s to
+`https://www.amazon.es/dp/…?tag=…&ascsubtag=rm-topicpage-0-1`. A search page renders 85 outbound
+anchors, all 85 through `/go/` and all 85 `rel="nofollow sponsored"`. Advanced search round-trips
+POST → 302 → results with `noindex, nofollow`.
+
+**Deferred:** Lighthouse and the mobile pass are worth running in Phase 10 against the dyno, not
+against `runserver` — local numbers measure the Python dev server, not the deployed site. The
+"simple search redirects to a topic" criterion cannot be exercised yet either: `match_topic` only
+returns servable topics, and all 12 seeded topics are still `DRAFT` (§9.2 gate: none are
+`human_reviewed`, and the best has 2 distinct categories against a ≥4 requirement). The code path
+is in place; it will start firing as soon as the first topic goes ACTIVE.
+
 ### Phase 9 — Tracking
-- `/go/<click_id>/` redirect view, affiliate URL builder with `ascsubtag`, `ClickEvent` writing.
+- ~~`/go/<click_id>/` redirect view, affiliate URL builder with `ascsubtag`, `ClickEvent` writing.~~
+  **Delivered in Phase 8** — the product cards needed a live target. See Phase 8 deviations 1–2.
 - `PageView` middleware with bot filtering and salted session hashing.
 - `UserQuery` write-behind + `mine_query_demand` + `recompute_ctr`.
 - Admin dashboards: clicks by placement/button/position, top queries, zero-result queries,

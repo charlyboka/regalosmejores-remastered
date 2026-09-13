@@ -405,6 +405,97 @@ redirects that are painful to unwind.
 
 ---
 
+## 5e. The public site
+
+### Pages and who may index them
+
+| Route | Page | Robots |
+|---|---|---|
+| `/` | Home | index |
+| `/regalos/ocasiones|para-quien|aficiones|presupuesto/` | Hubs | index |
+| `/regalos/<slug>/` | Topic | index **only if** `topic.is_indexable` |
+| `/buscar/` | Simple search | `noindex, follow` |
+| `/buscador-avanzado/` | The filter tool | index |
+| `/buscador-avanzado/resultados/` | Advanced results | `noindex, nofollow` |
+| `/afiliados/` | Affiliate disclosure | index |
+| `/aviso-legal/`, `/privacidad/`, `/cookies/`, `/contacto/` | Legal | `noindex, follow` |
+| `/go/<product_id>/` | Outbound redirect | blocked in `robots.txt` |
+
+The rule behind the table: **SEO value stays on a finite, quality-gated set of pages.** Search
+results are machine-made and unbounded, so they never enter the index. If a query matches a
+curated topic strongly, `/buscar/` 302s to that topic instead of serving a thin copy of it.
+
+### Why the home page and hubs can look empty
+
+Home, the hubs and the zero-result suggestions all filter on
+`status=ACTIVE, is_indexable=True, merged_into__isnull=True`. Freshly seeded topics are `DRAFT`
+and fail the §9.2 gate, so **empty is the correct output, not a bug.** A topic page itself renders
+regardless — go to `/regalos/<slug>/` directly.
+
+To see a populated home page before the gate passes naturally, promote one by hand in Admin (or
+the shell): set `status=ACTIVE` and `is_indexable=True`. Do this knowingly — an indexable topic
+with fewer than 12 diverse products is exactly the thin page the gate exists to prevent.
+
+### Outbound links
+
+Every Amazon link on the site — image, title, and all three CTAs — goes through
+`/go/<product_id>/?b=<button>&p=<placement>&pos=<position>&t=<topic_id>`, carries
+`rel="nofollow sponsored"` and opens in a new tab. The view writes a `ClickEvent`, then 302s to
+the tagged URL with `ascsubtag=rm-<placement>-<topic>-<click>`, which is what lets Amazon's report
+be joined back to a placement.
+
+To check tracking is alive:
+
+```powershell
+uv run python manage.py shell -c "from apps.tracking.models import ClickEvent; print(ClickEvent.objects.count())"
+```
+
+**Never display a price anywhere**, including `price_cents`. Amazon's affiliate terms forbid
+showing a cached price, and ours go stale within minutes. Cards show a band (económico / medio /
+premium) and nothing more.
+
+### After changing any template
+
+`static/css/site.css` is committed and CI fails if it is stale, so any new Tailwind class needs a
+rebuild:
+
+```powershell
+.\scripts\build_css.ps1
+```
+
+Tailwind writes its progress banner to stderr, so PowerShell reports "exited with code 1" on a
+successful build. Confirm with `Get-Item static\css\site.css` instead of trusting the exit code.
+
+### Smoke-testing every route
+
+```powershell
+@'
+import django, os, logging
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.dev")
+django.setup()
+logging.disable(logging.CRITICAL)
+from django.conf import settings
+settings.ALLOWED_HOSTS = ["*"]
+from django.test import Client
+c = Client()
+for u in ["/", "/regalos/ocasiones/", "/buscar/", "/buscador-avanzado/", "/afiliados/",
+          "/robots.txt", "/sitemap.xml", "/healthz/", "/no-existe/"]:
+    r = c.get(u)
+    print(r.status_code, u)
+'@ | uv run python - 2>$null
+```
+
+`ALLOWED_HOSTS` must be widened in the snippet or every request returns **400**, not 404 — the
+test client uses the host `testserver`.
+
+### Before launch
+
+The legal templates contain `[PENDIENTE: …]` markers for the operator's name, NIF, address and
+contact email. These are required by art. 10 LSSI-CE and **must be filled in before the site is
+public.**
+
+---
+
 ## 6. Database access
 
 No `psql` is installed. Use an ephemeral psycopg session:
