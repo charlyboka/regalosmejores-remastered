@@ -25,4 +25,13 @@ if [ ! -x "$BINARY" ]; then
 fi
 
 mkdir -p "$ROOT/static/css"
-"$BINARY" -i "$ROOT/static/src/input.css" -o "$ROOT/static/css/site.css" --minify "$@"
+OUTPUT="$ROOT/static/css/site.css"
+"$BINARY" -i "$ROOT/static/src/input.css" -o "$OUTPUT" --minify "$@"
+
+# A stylesheet with no utilities means the scan found no templates (or the build was cut short).
+# Catch it here rather than in a browser looking at an unstyled page.
+if ! grep -q "rounded-xl" "$OUTPUT"; then
+  echo "ERROR: $OUTPUT contains no utility classes -- nothing was scanned." >&2
+  exit 1
+fi
+echo "Built $OUTPUT ($(wc -c < "$OUTPUT") bytes)."

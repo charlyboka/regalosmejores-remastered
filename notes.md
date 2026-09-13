@@ -11,6 +11,7 @@ Search -> always return something.
 
 
 TODO:
+- potentially one doc on hwo to operate the site, the human on the loop. Also potentialy if tokens available some auto approve or something. I need more visibility on what runs the pipelines etc. Visibilty of products in the db etc. 
 - GA4
 - Deploy in heroku - have it running autoonomously
 - Mapping and traffic
@@ -19,7 +20,10 @@ TODO:
 - Nice UI and links
 - Monitor clicks etc
 - Affiliates link work
-- monitor pipelines - pipelines really are working properly long term. 
+- monitor pipelines - pipelines really are working properly long term. Monitor proper topics etc
+- Orchestrate prpoer telegram, including contacto
+- Revisar pagines com aviso legal, navbar, footer etc. 
+- Deploy, https, cloudflare
 
 Marketing:
 - Family friends

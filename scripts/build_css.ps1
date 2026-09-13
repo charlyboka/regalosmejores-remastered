@@ -34,8 +34,28 @@ if ($Watch) { $CliArgs += "--watch" }
 
 Push-Location $Root
 try {
-    & $Binary @CliArgs
+    # The CLI writes its banner and progress to stderr. Under $ErrorActionPreference = "Stop"
+    # PowerShell 5.1 turns that into a *terminating* NativeCommandError, which kills the build
+    # mid-write and leaves a truncated stylesheet -- preflight present, every utility missing,
+    # exit code 1. Relax the preference around the call and judge success by $LASTEXITCODE.
+    $Previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $Binary @CliArgs 2>&1 | ForEach-Object { Write-Host $_ }
+    $ExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $Previous
+
+    if ($ExitCode -ne 0) { throw "Tailwind CLI failed with exit code $ExitCode." }
 }
 finally {
     Pop-Location
+}
+
+if (-not $Watch) {
+    # A stylesheet with no utilities in it is the signature of the truncation above. Fail loudly
+    # rather than committing it and discovering it as an unstyled page in the browser.
+    $Size = (Get-Item $OutputPath).Length
+    if (-not (Select-String -Path $OutputPath -Pattern "rounded-xl" -SimpleMatch -Quiet)) {
+        throw "Built $OutputPath ($Size bytes) contains no utility classes -- the build was truncated or no templates were scanned."
+    }
+    Write-Host "Built $OutputPath ($Size bytes)."
 }
