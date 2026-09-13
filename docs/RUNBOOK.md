@@ -32,7 +32,33 @@ if the lock file is out of date.
 
 ## 2. Start and stop the app locally
 
-### Web server
+### Everything at once (the normal way)
+
+```powershell
+uv run python manage.py dev
+```
+
+Starts the web server **and** the pipeline worker in one console. **Stop both with `Ctrl+C`.**
+If either process dies, the other is shut down too, so you never end up with half a stack.
+
+| Flag | Effect |
+|---|---|
+| `--port 8001` | Serve on another port |
+| `--no-worker` | Web server only |
+| `--no-web` | Worker only |
+
+If `Ctrl+C` ever leaves something behind (force-closed window, crashed console):
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Where-Object { $_.CommandLine -match 'runserver|run_worker' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+A job the worker was holding when it died is **not** lost: the next worker reclaims it after 30
+minutes (`release_stale_jobs`), or immediately if you use the *Reintentar ahora* action in Admin.
+
+### Web server on its own
 
 ```powershell
 uv run python manage.py runserver          # http://127.0.0.1:8000/
@@ -46,13 +72,15 @@ Get-NetTCPConnection -LocalPort 8000 -State Listen | ForEach-Object { Stop-Proce
 
 Run on another port with `runserver 8001`.
 
-### Background worker
+### Background worker on its own
 
 ```powershell
-uv run python manage.py run_worker         # available from Phase 5 onwards
+uv run python manage.py run_worker
+uv run python manage.py run_worker --once     # one iteration then exit, for debugging
 ```
 
-Stop with `Ctrl+C`. Only ever run **one** worker — the job queue is designed for concurrency 1.
+Stop with `Ctrl+C` — it finishes the job in flight first. Only ever run **one** worker: the job
+queue is designed for concurrency 1.
 
 ### Production-like server
 
@@ -114,6 +142,7 @@ looking at the live site.
 | `/admin/pipelines/keepatokenledger/` | Keepa token balance over time — the hard constraint on ingestion speed |
 | `/admin/pipelines/llmcall/` | LLM spend, per call and per day, against `LLM_DAILY_BUDGET_USD` |
 | `/admin/pipelines/notificationlog/` | What was sent to Telegram and whether it succeeded |
+| `/admin/pipelines/workerheartbeat/` | **Is the worker alive?** The *Vivo* column goes red if there has been no heartbeat for 15 minutes |
 | `/admin/search/userquery/` | Raw incoming searches |
 | `/admin/search/querydemand/` | Clustered demand — the input to new topic creation |
 | `/admin/topics/topic/` | Topic status, quality score, indexability |
@@ -126,15 +155,32 @@ is the pull channel. If Telegram goes quiet, check `notificationlog` before assu
 
 ### Kill switch
 
-Set `PIPELINES_ENABLED=false` and restart the worker. The worker keeps running but claims no new
-jobs. Individual pipelines can be disabled instead via `/admin/pipelines/pipelineschedule/`.
+Set `PIPELINES_ENABLED=false` and restart the worker. The worker keeps running and keeps claiming
+jobs, but every one of them is deferred instead of executed, so nothing is lost — they all resume
+when you switch it back on. Individual pipelines can be disabled instead via
+`/admin/pipelines/pipelineschedule/`.
 
 ### Running a pipeline by hand
 
 ```powershell
-uv run python manage.py run_pipeline <key>           # available from Phase 5 onwards
-uv run python manage.py run_pipeline <key> --dry-run
+uv run python manage.py run_pipeline --list                    # what exists
+uv run python manage.py run_pipeline demo_noop                 # engine health check, costs nothing
+uv run python manage.py run_pipeline <key> --max-items 5
+uv run python manage.py run_pipeline <key> --payload '{"asin": "B0XXXX"}'
+uv run python manage.py run_pipeline <key> --ignore-budget     # spends real money, be deliberate
 ```
+
+This runs **synchronously, in your console, bypassing the queue**, but through the same executor
+the worker uses — so it produces the same `PipelineRun`, step, token and cost records. It prints
+the outcome and per-step timings when it finishes.
+
+Three diagnostic pipelines exist permanently and touch no external API:
+
+| Key | Proves |
+|---|---|
+| `demo_noop` | Claiming, running, step tracking and run records all work |
+| `demo_fail` | Retry backoff, and the Telegram alert once attempts are exhausted |
+| `demo_budget` | `BudgetGuard` defers instead of executing when tokens are short |
 
 ### Checking the external APIs
 

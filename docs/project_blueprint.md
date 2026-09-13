@@ -984,13 +984,48 @@ line of each phase, run manually. Development runs locally against the productio
   JSON for $0.000036, embeddings returned 512 dims, a message landed in the channel, and
   `KeepaTokenLedger` / `LLMCall` / `NotificationLog` rows were all written.
 
-### Phase 3 — Pipeline engine
+### Phase 3 — Pipeline engine ✅ DONE
 - `Pipeline` base + registry + `JobQueue` + `scheduler` + `BudgetGuard` + `run_worker`.
 - Admin: queue view with retry/cancel actions, run history with duration/cost columns,
   schedule editor, global kill switch.
 - `manage.py run_pipeline <key>`.
 - **Verify:** a no-op demo pipeline scheduled every minute produces `PipelineRun` rows; killing the
   worker mid-job leaves the job reclaimable; `BudgetGuard` visibly defers when the reserve is faked.
+
+**Delivered.** `apps/pipelines/`: `base.py` (`Pipeline` ABC, `PipelineContext` with lazy
+`keepa`/`llm` clients and a `step()` context manager, `PipelineResult`), `registry.py`
+(`@register` + `pkgutil` auto-discovery of `apps.pipelines.pipelines.*`), `queue.py`
+(`enqueue`/`claim_next`/`complete`/`defer`/`fail`/`release_stale_jobs`), `scheduler.py`
+(`sync_schedules`, `tick`), `budget.py` (`BudgetGuard` with four gates), `worker.py`
+(`execute()` + `Worker` loop). Commands: `run_worker [--once --sleep --name]`,
+`run_pipeline <key> [--list --payload --max-items --ignore-budget]`, and `dev` (in `apps.web`)
+which runs the web server and the worker together for local development.
+
+**Deviations and additions beyond §4.5 / §7.1:**
+- **`WorkerHeartbeat` model added** (migration `pipelines/0002`). Without it there is no way to
+  answer "is the worker alive?" — a silent worker and an empty queue look identical in Admin.
+  Keyed by `DYNO` (or hostname), so restarts reuse one row instead of accumulating dead ones.
+  `is_stale` is true after 15 minutes without a beat.
+- **`defer()` decrements `attempts`.** Deferral means conditions were wrong (no tokens, budget
+  spent, kill switch), not that the job is broken, so it must not consume a retry. Otherwise a
+  weekend of token starvation would permanently FAIL every scheduled job.
+- **The kill switch defers rather than refusing to claim.** `PIPELINES_ENABLED=false` is a
+  `BudgetGuard` gate, which means paused work is visible in Admin as DEFERRED jobs with a reason,
+  and resumes automatically when the flag flips back.
+- **Three permanent diagnostic pipelines** (`demo_noop`, `demo_fail`, `demo_budget`) instead of a
+  throwaway one, so the engine can always be verified without spending tokens or LLM budget.
+  None declares a `default_cron`; they are on-demand only.
+- **`execute()` is shared** by the worker and `run_pipeline`, so a manual run is not a second code
+  path — it produces identical run, step, token and cost records.
+- **Budget gates use real data, not estimates:** Keepa headroom is projected from the newest
+  `KeepaTokenLedger` row (Keepa's own `tokensLeft` + `refillRate`), ignoring readings older than
+  6 hours; LLM spend comes from summing today's `LLMCall` rows.
+
+**Verified live:** `run_pipeline demo_noop` → SUCCESS with two step rows; `demo_budget` → SKIPPED
+(`keepa_budget_exhausted`, "~1475 tokens available, need 10000020") and the job returned to
+DEFERRED with `attempts` back at 0; `demo_fail` → FAILED run, job requeued with 60 s backoff;
+duplicate `dedupe_key` returned `None`; a job forced to RUNNING with a 2-hour-old lock was
+reclaimed to QUEUED; `manage.py dev` started both processes and stopped both cleanly.
 
 ### Phase 4 — Ingestion (get products into the DB)
 - `seed_products` (Product Finder + quality filters), `hydrate_products` (batch ×100),

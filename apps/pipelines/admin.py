@@ -10,6 +10,7 @@ from .models import (
     PipelineRun,
     PipelineSchedule,
     PipelineStepRun,
+    WorkerHeartbeat,
 )
 
 
@@ -190,6 +191,25 @@ class NotificationLogAdmin(admin.ModelAdmin):
     @admin.display(description="Mensaje")
     def short_message(self, obj: NotificationLog) -> str:
         return obj.message[:100]
+
+    def has_add_permission(self, request) -> bool:
+        return False
+
+    def has_change_permission(self, request, obj=None) -> bool:
+        return False
+
+
+@admin.register(WorkerHeartbeat)
+class WorkerHeartbeatAdmin(admin.ModelAdmin):
+    """If this page is empty or every row is stale, the queue is not being drained."""
+
+    list_display = ("name", "at", "alive", "pid", "jobs_processed", "current_job", "started_at")
+    ordering = ("name",)
+    readonly_fields = tuple(f.name for f in WorkerHeartbeat._meta.fields if f.name != "id")
+
+    @admin.display(description="Vivo", boolean=True)
+    def alive(self, obj: WorkerHeartbeat) -> bool:
+        return not obj.is_stale
 
     def has_add_permission(self, request) -> bool:
         return False

@@ -207,3 +207,37 @@ class NotificationLog(models.Model):
 
     def __str__(self) -> str:
         return f"[{self.level}] {self.key}"
+
+
+class WorkerHeartbeat(models.Model):
+    """Dead-man switch for the worker dyno.
+
+    The worker touches this row on every loop iteration. A monitor that sees no beat for more
+    than 15 minutes fires a Telegram CRITICAL, which is the only way to notice that the queue
+    has silently stopped draining.
+    """
+
+    name = models.CharField(max_length=64, unique=True)
+    at = models.DateTimeField(db_index=True)
+    pid = models.IntegerField(null=True, blank=True)
+    current_job = models.ForeignKey(
+        JobQueue, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    jobs_processed = models.IntegerField(default=0)
+    started_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "latido del worker"
+        verbose_name_plural = "latidos del worker"
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return f"{self.name} @ {self.at:%Y-%m-%d %H:%M:%S}"
+
+    @property
+    def is_stale(self) -> bool:
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        return self.at < timezone.now() - timedelta(minutes=15)
