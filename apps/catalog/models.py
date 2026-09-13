@@ -124,6 +124,15 @@ class Product(models.Model):
         return self.image_urls[0] if self.image_urls else None
 
     @property
+    def gift_summary(self) -> str:
+        """The "por qué es buen regalo" line shown on a card.
+
+        Returns empty unless something has bulk-loaded it first. That is deliberate: a card is
+        always rendered in a loop, and a lazy lookup here would be an N+1 query on every page.
+        """
+        return getattr(self, "_gift_summary", "")
+
+    @property
     def amazon_detail_path(self) -> str:
         return f"/dp/{self.asin}"
 

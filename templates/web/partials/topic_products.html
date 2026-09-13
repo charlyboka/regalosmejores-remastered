@@ -1,0 +1,23 @@
+{% comment %}
+The product grid plus its "cargar más" button. Rendered standalone on first paint and again by
+HTMX for each subsequent page, so the two can never drift apart.
+
+`hx-swap="outerHTML"` on the button replaces the button with the next batch, which keeps the
+markup flat and needs no JavaScript of our own.
+{% endcomment %}
+{% for link in links %}
+  {% include "components/product_card.html" with product=link.product position=forloop.counter0|add:start_position topic_id=topic.pk placement=placement %}
+{% endfor %}
+
+{% if has_more %}
+  <div class="col-span-full flex justify-center pt-2" id="mas-{{ next_offset }}">
+    <button type="button"
+            hx-get="{% url 'web:topic_more' topic.slug %}?offset={{ next_offset }}"
+            hx-target="#mas-{{ next_offset }}"
+            hx-swap="outerHTML"
+            hx-indicator="#mas-{{ next_offset }}"
+            class="rounded-lg border border-slate-300 px-5 py-2 text-sm font-medium hover:bg-slate-50">
+      Cargar más
+    </button>
+  </div>
+{% endif %}

@@ -148,6 +148,10 @@ TELEGRAM_CHANNEL_ID = env("TELEGRAM_CHANNEL_ID", default="")
 
 # --- Amazon affiliate ---
 AMAZON_AFFILIATE_TAG = env("AMAZON_AFFILIATE_TAG", default="")
+AMAZON_MARKETPLACE_URL = env("AMAZON_MARKETPLACE_URL", default="https://www.amazon.es")
+#: Amazon's image CDN, preconnected in the base template. Every product image is hotlinked from
+#: here — the Associates agreement requires images be served from Amazon, never re-hosted.
+AMAZON_IMAGE_CDN = env("AMAZON_IMAGE_CDN", default="https://m.media-amazon.com")
 AMAZON_MARKETPLACE_HOST = env("AMAZON_MARKETPLACE_HOST", default="www.amazon.es")
 
 # --- Pipelines / budgets ---

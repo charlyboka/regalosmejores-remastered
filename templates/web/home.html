@@ -1,8 +1,70 @@
 {% extends "base.html" %}
 
+{% block title %}{{ SITE_NAME }} · Ideas de regalo que aciertan{% endblock %}
+{% block og_title %}{{ SITE_NAME }} · Ideas de regalo que aciertan{% endblock %}
+
+{% block head_extra %}
+  <script type="application/ld+json">{{ jsonld }}</script>
+{% endblock %}
+
 {% block content %}
-  <h1 class="text-3xl font-semibold tracking-tight">{{ SITE_NAME }}</h1>
-  <p class="mt-3 text-slate-600">
-    Estructura inicial del proyecto. Las páginas reales llegan en fases posteriores.
-  </p>
+  <section class="mb-12 text-center">
+    <h1 class="mx-auto max-w-2xl text-3xl font-semibold tracking-tight sm:text-4xl">
+      Encuentra el regalo adecuado sin dar mil vueltas
+    </h1>
+    <p class="mx-auto mt-3 max-w-xl text-slate-600">
+      Describe a quién va dirigido y qué le gusta. Nosotros nos encargamos del resto.
+    </p>
+
+    <form action="{% url 'web:search' %}" method="get" role="search" class="mx-auto mt-6 max-w-xl">
+      <label for="q-home" class="sr-only">¿Qué regalo buscas?</label>
+      <div class="flex flex-col gap-2 sm:flex-row">
+        <input id="q-home" type="search" name="q" maxlength="200" autocomplete="off"
+               placeholder="regalo para mi madre que le encanta la jardinería"
+               class="w-full rounded-lg border border-slate-300 px-4 py-3 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200">
+        <button type="submit" class="rounded-lg bg-slate-900 px-6 py-3 font-medium text-white hover:bg-slate-700">
+          Buscar
+        </button>
+      </div>
+    </form>
+
+    <p class="mt-3 text-sm text-slate-500">
+      ¿Prefieres ir por filtros? Usa el
+      <a href="{% url 'web:advanced_search' %}" class="underline">buscador avanzado</a>.
+    </p>
+  </section>
+
+  {% if seasonal %}
+    <section class="mb-12">
+      <h2 class="mb-4 text-lg font-semibold">Es la época de…</h2>
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {% for topic in seasonal %}
+          {% include "components/topic_card.html" %}
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
+  {% if featured %}
+    <section class="mb-12">
+      <h2 class="mb-4 text-lg font-semibold">Temas destacados</h2>
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {% for topic in featured %}
+          {% include "components/topic_card.html" %}
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
+  <section>
+    <h2 class="mb-4 text-lg font-semibold">Explora por…</h2>
+    <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {% for slug, title in hubs %}
+        <a href="/regalos/{{ slug }}/"
+           class="rounded-xl border border-slate-200 p-4 font-medium transition hover:border-slate-400 hover:shadow-sm">
+          {{ title }}
+        </a>
+      {% endfor %}
+    </div>
+  </section>
 {% endblock %}

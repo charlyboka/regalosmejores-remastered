@@ -1,0 +1,79 @@
+{% comment %}
+Product card. Blueprint §8.3 — one component, variant-driven, never copy-pasted.
+
+Context: product · position · placement · topic_id (optional) · variant (grid|list|compact)
+
+Two rules are load-bearing here:
+  * No price, ever (§1). The price-band pill is the only money signal allowed, and the real
+    price is only ever seen on Amazon, live, after the click.
+  * Every outbound link goes through /go/ with rel="nofollow sponsored" and target="_blank".
+{% endcomment %}
+{% url 'web:go' product.pk as go_url %}
+{% with qs=placement|default:'TOPIC_PAGE' %}
+<article class="group flex h-full flex-col overflow-hidden rounded-xl border border-slate-200 transition hover:border-slate-300 hover:shadow-sm">
+
+  <a href="{{ go_url }}?b=IMAGE&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}"
+     rel="nofollow sponsored" target="_blank"
+     class="block bg-slate-50"
+     aria-label="Ver {{ product.title|truncatechars:80 }} en Amazon">
+    {% if product.primary_image_url %}
+      <img src="{{ product.primary_image_url }}" alt="{{ product.title|truncatechars:120 }}"
+           width="320" height="320" loading="lazy" decoding="async"
+           class="mx-auto h-44 w-full object-contain p-3">
+    {% else %}
+      <div class="flex h-44 items-center justify-center text-sm text-slate-400">Sin imagen</div>
+    {% endif %}
+  </a>
+
+  <div class="flex flex-1 flex-col gap-2 p-4">
+    <div class="flex flex-wrap items-center gap-2 text-xs">
+      {% if product.price_band %}
+        <span class="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-600">
+          {{ product.get_price_band_display }}
+        </span>
+      {% endif %}
+      {% if product.brand %}
+        <span class="truncate text-slate-500">{{ product.brand }}</span>
+      {% endif %}
+    </div>
+
+    <h3 class="text-sm font-medium leading-snug">
+      <a href="{{ go_url }}?b=TITLE&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}"
+         rel="nofollow sponsored" target="_blank" class="hover:underline">
+        {{ product.title|truncatechars:95 }}
+      </a>
+    </h3>
+
+    {% if product.gift_summary %}
+      <p class="text-sm leading-snug text-slate-600">{{ product.gift_summary|truncatechars:150 }}</p>
+    {% endif %}
+
+    {% if product.rating %}
+      <p class="text-xs text-slate-500">
+        <span aria-hidden="true" class="text-amber-500">★</span>
+        <span class="font-medium text-slate-700">{{ product.rating }}</span>
+        <span class="sr-only">de 5</span>
+        {% if product.review_count %}· {{ product.review_count|floatformat:"0" }} reseñas{% endif %}
+      </p>
+    {% endif %}
+
+    <div class="mt-auto flex flex-wrap gap-2 pt-2">
+      <a href="{{ go_url }}?b=SEE_PRICE&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}"
+         rel="nofollow sponsored" target="_blank"
+         class="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700">
+        Ver precio
+      </a>
+      <a href="{{ go_url }}?b=SEE_REVIEWS&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}"
+         rel="nofollow sponsored" target="_blank"
+         class="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+        Ver reseñas
+      </a>
+      <a href="{{ go_url }}?b=DETAILS&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}"
+         rel="nofollow sponsored" target="_blank"
+         class="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+        Ver detalles
+      </a>
+    </div>
+  </div>
+</article>
+{% endwith %}

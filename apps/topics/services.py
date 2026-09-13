@@ -11,11 +11,13 @@ import logging
 from dataclasses import dataclass
 
 from django.db import transaction
+from django.db.models import F, Q
 from django.utils import timezone
+from pgvector.django import CosineDistance
 
 from apps.catalog import vocabularies
 from apps.search import engine
-from apps.topics.models import LinkSource, ProductTopicLink, Topic
+from apps.topics.models import LinkSource, ProductTopicLink, Topic, TopicAlias, TopicStatus
 
 logger = logging.getLogger(__name__)
 
@@ -231,3 +233,130 @@ def embed_topic(topic: Topic, *, llm) -> None:
     topic.canonical_text = build_canonical_text(topic)
     topic.embedding = llm.embed_one(topic.canonical_text, purpose="topic_embedding")
     topic.save(update_fields=["canonical_text", "embedding", "updated_at"])
+
+
+# --- read side: everything the public site needs ---------------------------------------------
+
+#: How close a user's query must be to a topic before we redirect them to it instead of showing
+#: search results. Deliberately strict: sending someone to the wrong landing page is much worse
+#: than showing them a result list, because the page then lies about what they asked for.
+TOPIC_REDIRECT_SIMILARITY = 0.90
+
+
+def visible_links(topic: Topic):
+    """The products a topic page actually shows, in rank order.
+
+    Excluded links stay in the table — an editor's "no" is a decision worth keeping — but they
+    never reach a page, and `_apply_gate` does not count them either.
+    """
+    return (
+        ProductTopicLink.objects.filter(topic=topic, is_excluded=False)
+        .select_related("product")
+        .filter(product__is_active=True, product__is_blocked=False)
+        .order_by("rank", "-score")
+    )
+
+
+def related_topics(topic: Topic, *, limit: int = 6) -> list[Topic]:
+    """Siblings for the "regalos relacionados" block (§8.4 internal linking).
+
+    Vector-nearest where possible, because that is the same notion of similarity the rest of the
+    site uses. Without an embedding it falls back to same-kind topics, which is weaker but never
+    leaves the block empty — an empty related block is a dead end for both users and crawlers.
+    """
+    base = Topic.objects.filter(
+        status=TopicStatus.ACTIVE, is_indexable=True, merged_into__isnull=True
+    ).exclude(pk=topic.pk)
+
+    if topic.embedding is None:
+        return list(base.filter(kind=topic.kind).order_by("-priority")[:limit])
+
+    return list(
+        base.exclude(embedding__isnull=True)
+        .annotate(distance=CosineDistance("embedding", topic.embedding))
+        .order_by("distance")[:limit]
+    )
+
+
+def seasonal_topics(*, limit: int = 4, today=None) -> list[Topic]:
+    """Topics whose season is open right now. Ranges may wrap the year end (Navidad)."""
+    today = today or timezone.localdate()
+    open_now = Q(seasonal_start__lte=today, seasonal_end__gte=today)
+    wrapping = Q(seasonal_start__gt=F("seasonal_end")) & (
+        Q(seasonal_start__lte=today) | Q(seasonal_end__gte=today)
+    )
+    return list(
+        Topic.objects.filter(
+            status=TopicStatus.ACTIVE,
+            is_indexable=True,
+            merged_into__isnull=True,
+            seasonal_start__isnull=False,
+            seasonal_end__isnull=False,
+        )
+        .filter(open_now | wrapping)
+        .order_by("-priority")[:limit]
+    )
+
+
+def suggestions(*, limit: int = 6) -> list[Topic]:
+    """What to offer when a search finds nothing. Never an empty page."""
+    return list(
+        Topic.objects.filter(
+            status=TopicStatus.ACTIVE, is_indexable=True, merged_into__isnull=True
+        ).order_by("-priority", "-quality_score")[:limit]
+    )
+
+
+def topic_for_alias_slug(slug: str) -> Topic | None:
+    """Resolve a dead slug through its alias, following one merge hop."""
+    alias = (
+        TopicAlias.objects.filter(normalized=slug.replace("-", " "))
+        .select_related("topic", "topic__merged_into")
+        .first()
+    )
+    if alias is None:
+        return None
+    return alias.topic.merged_into or alias.topic
+
+
+def match_topic(normalized: str, *, llm=None) -> Topic | None:
+    """Find the curated topic a query should be redirected to, or None.
+
+    An exact alias hit wins outright: an alias is a phrasing someone deliberately recorded as
+    meaning this topic. Otherwise we fall back to the embedding, and only above a strict
+    threshold. The alias `hits` counter is what later shows which phrasings real users type.
+    """
+    if not normalized:
+        return None
+
+    alias = (
+        TopicAlias.objects.filter(normalized=normalized)
+        .select_related("topic", "topic__merged_into")
+        .first()
+    )
+    if alias is not None:
+        TopicAlias.objects.filter(pk=alias.pk).update(hits=F("hits") + 1)
+        candidate = alias.topic.merged_into or alias.topic
+        return candidate if _is_servable(candidate) else None
+
+    client = llm or engine._shared_client()
+    try:
+        embedding = client.embed_one(normalized, purpose="topic_match")
+    except Exception:  # noqa: BLE001 - a redirect is a nicety; search still works without it
+        logger.warning("No se pudo incrustar %r para emparejar tema", normalized, exc_info=True)
+        return None
+
+    best = (
+        Topic.objects.filter(status=TopicStatus.ACTIVE, is_indexable=True, merged_into__isnull=True)
+        .exclude(embedding__isnull=True)
+        .annotate(distance=CosineDistance("embedding", embedding))
+        .order_by("distance")
+        .first()
+    )
+    if best is None or (1 - float(best.distance)) < TOPIC_REDIRECT_SIMILARITY:
+        return None
+    return best
+
+
+def _is_servable(topic: Topic) -> bool:
+    return topic.status == TopicStatus.ACTIVE and topic.merged_into_id is None

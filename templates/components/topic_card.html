@@ -1,0 +1,7 @@
+<a href="{{ topic.get_absolute_url }}"
+   class="flex flex-col gap-1 rounded-xl border border-slate-200 p-4 transition hover:border-slate-400 hover:shadow-sm">
+  <span class="font-medium leading-snug">{{ topic.title }}</span>
+  {% if topic.linked_count %}
+    <span class="text-xs text-slate-500">{{ topic.linked_count }} ideas seleccionadas</span>
+  {% endif %}
+</a>

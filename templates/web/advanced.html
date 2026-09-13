@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block title %}Buscador de regalos por filtros · {{ SITE_NAME }}{% endblock %}
+{% block og_title %}Buscador de regalos por filtros{% endblock %}
+{% block meta_description %}Filtra por destinatario, ocasión, afición y presupuesto para encontrar ideas de regalo concretas.{% endblock %}
+
+{% block content %}
+  <header class="mb-8">
+    <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">Buscador de regalos</h1>
+    <p class="mt-2 max-w-2xl text-slate-600">
+      Elige lo que sepas de la persona. No hace falta rellenarlo todo: con un par de datos ya
+      podemos proponerte algo.
+    </p>
+  </header>
+
+  <form action="{% url 'web:advanced_submit' %}" method="post" class="space-y-8">
+    {% csrf_token %}
+
+    <fieldset>
+      <legend class="mb-3 font-medium">Para quién</legend>
+      <div class="flex flex-wrap gap-2">
+        {% for key, label in recipients %}
+          <label class="cursor-pointer">
+            <input type="checkbox" name="recipients" value="{{ key }}" class="peer sr-only"
+                   {% if key in selected.recipients %}checked{% endif %}>
+            <span class="block rounded-full border border-slate-300 px-3 py-1.5 text-sm peer-checked:border-slate-900 peer-checked:bg-slate-900 peer-checked:text-white peer-focus:ring-2 peer-focus:ring-slate-300">
+              {{ label }}
+            </span>
+          </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend class="mb-3 font-medium">Ocasión</legend>
+      <div class="flex flex-wrap gap-2">
+        {% for key, label in occasions %}
+          <label class="cursor-pointer">
+            <input type="checkbox" name="occasions" value="{{ key }}" class="peer sr-only"
+                   {% if key in selected.occasions %}checked{% endif %}>
+            <span class="block rounded-full border border-slate-300 px-3 py-1.5 text-sm peer-checked:border-slate-900 peer-checked:bg-slate-900 peer-checked:text-white peer-focus:ring-2 peer-focus:ring-slate-300">
+              {{ label }}
+            </span>
+          </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend class="mb-3 font-medium">Aficiones e intereses</legend>
+      <div class="flex flex-wrap gap-2">
+        {% for key, label in interests %}
+          <label class="cursor-pointer">
+            <input type="checkbox" name="interests" value="{{ key }}" class="peer sr-only"
+                   {% if key in selected.interests %}checked{% endif %}>
+            <span class="block rounded-full border border-slate-300 px-3 py-1.5 text-sm peer-checked:border-slate-900 peer-checked:bg-slate-900 peer-checked:text-white peer-focus:ring-2 peer-focus:ring-slate-300">
+              {{ label }}
+            </span>
+          </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend class="mb-3 font-medium">Presupuesto</legend>
+      <div class="flex flex-wrap gap-2">
+        <label class="cursor-pointer">
+          <input type="radio" name="price_band" value="" class="peer sr-only" checked>
+          <span class="block rounded-full border border-slate-300 px-3 py-1.5 text-sm peer-checked:border-slate-900 peer-checked:bg-slate-900 peer-checked:text-white">
+            Cualquiera
+          </span>
+        </label>
+        {% for value, label in price_bands %}
+          <label class="cursor-pointer">
+            <input type="radio" name="price_band" value="{{ value }}" class="peer sr-only">
+            <span class="block rounded-full border border-slate-300 px-3 py-1.5 text-sm peer-checked:border-slate-900 peer-checked:bg-slate-900 peer-checked:text-white">
+              {{ label }}
+            </span>
+          </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    <div>
+      <label for="q-adv" class="mb-2 block font-medium">Algo más que quieras contarnos</label>
+      <input id="q-adv" type="text" name="q" maxlength="200" value="{{ free_text }}"
+             placeholder="le acaba de cambiar de casa y cocina mucho"
+             class="w-full max-w-xl rounded-lg border border-slate-300 px-4 py-3 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200">
+    </div>
+
+    <button type="submit" class="rounded-lg bg-slate-900 px-6 py-3 font-medium text-white hover:bg-slate-700">
+      Ver ideas de regalo
+    </button>
+  </form>
+{% endblock %}

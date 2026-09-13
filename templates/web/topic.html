@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block title %}{{ topic.meta_title|default:topic.title }} · {{ SITE_NAME }}{% endblock %}
+{% block og_title %}{{ topic.meta_title|default:topic.title }}{% endblock %}
+
+{% block meta_description %}{% if topic.meta_description %}{{ topic.meta_description }}{% else %}Ideas de regalo seleccionadas: {{ topic.title|lower }}.{% endif %}{% endblock %}
+{% block og_description %}{% if topic.meta_description %}{{ topic.meta_description }}{% else %}Ideas de regalo seleccionadas: {{ topic.title|lower }}.{% endif %}{% endblock %}
+
+{% comment %}
+A topic that fails the §9.2 quality gate stays perfectly usable for a human but leaves the index.
+Thin pages are the one thing that can sink a site like this, so the gate decides, not an editor.
+{% endcomment %}
+{% block robots %}
+  {% if topic.is_indexable %}
+    <meta name="robots" content="index, follow, max-image-preview:large">
+  {% else %}
+    <meta name="robots" content="noindex, follow">
+  {% endif %}
+{% endblock %}
+
+{% block head_extra %}
+  <script type="application/ld+json">{{ jsonld_crumbs }}</script>
+  {% if topic.is_indexable %}<script type="application/ld+json">{{ jsonld_list }}</script>{% endif %}
+{% endblock %}
+
+{% block content %}
+  <nav aria-label="Migas de pan" class="mb-4 text-sm text-slate-500">
+    <a href="{% url 'web:home' %}" class="hover:underline">Inicio</a>
+    <span aria-hidden="true" class="mx-1">/</span>
+    <span class="text-slate-700">{{ topic.title }}</span>
+  </nav>
+
+  <header class="mb-6 space-y-3">
+    <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">{{ topic.title }}</h1>
+
+    {% if topic.intro_html %}
+      <div class="prose-sm max-w-2xl text-slate-600">{{ topic.intro_html|safe }}</div>
+    {% endif %}
+
+    <p class="text-xs text-slate-500">
+      Enlaces de afiliado: si compras a través de ellos, {{ SITE_NAME }} puede recibir una comisión
+      sin coste adicional para ti.
+    </p>
+
+    {% if chips %}
+      <ul class="flex flex-wrap gap-2 pt-1">
+        {% for chip in chips %}
+          <li class="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">{{ chip }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </header>
+
+  {% if links %}
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {% include "web/partials/topic_products.html" %}
+    </div>
+  {% else %}
+    <p class="rounded-xl border border-slate-200 p-6 text-slate-600">
+      Todavía estamos seleccionando ideas para este tema. Mientras tanto, prueba la
+      <a href="{% url 'web:advanced_search' %}" class="underline">búsqueda avanzada</a>.
+    </p>
+  {% endif %}
+
+  {% if related %}
+    <section class="mt-12">
+      <h2 class="mb-4 text-lg font-semibold">Regalos relacionados</h2>
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {% for sibling in related %}
+          {% include "components/topic_card.html" with topic=sibling %}
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

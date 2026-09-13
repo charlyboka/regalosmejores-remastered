@@ -28,8 +28,16 @@ Marketing:
 
 Need some feedback from people - pansu?
 Some variation. 
+Maybe - A/B testing en el sentit de results i capturar quina version la penya arriba. 
 
 Cost: 
 29+49 *1.23 in api
 Heroku
 Domain
+GenAI tokens
+
+
+
+Misc:
+- buscar feines
+- SI aixo funciona -> scale to other countries, buscar suport del pato o algu de la feina i mirar si es pot anar a travel. 
