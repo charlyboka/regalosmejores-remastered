@@ -196,6 +196,65 @@ skip it.
 
 ---
 
+## 5b. The catalogue (ingestion)
+
+Four pipelines fill and maintain `catalog_product`. Normally the worker runs them on their cron and
+you never touch them; these are the manual equivalents.
+
+| Pipeline | Cron | Per run | What it does |
+|---|---|---|---|
+| `seed_products` | `0 */6 * * *` | 50 | Keepa Product Finder on the least-covered gift category → creates empty `Product` stubs. ~11 tokens. |
+| `hydrate_products` | `*/5 * * * *` | 25 | Fetches full data for stubs that have never been fetched. **Exactly 4 tokens per ASIN.** |
+| `refresh_products` | `0 */2 * * *` | 25 | Re-fetches anything older than 30 days. Skips parked products. 4 tokens per ASIN. |
+| `recompute_derived` | `20 1 * * *` | 5000 | Re-derives bands, `sales_rank_pct`, `quality_score` and re-applies the quality gate. **Zero tokens.** |
+
+```powershell
+uv run python manage.py run_pipeline seed_products
+uv run python manage.py run_pipeline hydrate_products --max-items 25
+uv run python manage.py run_pipeline refresh_products --payload '{\"refresh_after_days\": 0}'
+uv run python manage.py run_pipeline recompute_derived
+```
+
+**Pace.** Keepa refills 21 tokens/minute ≈ 1 260/hour, and hydration costs 4 tokens per product, so
+the hard ceiling is ~300 products/hour. The crons above are deliberately well under it: we want a
+queue that never empties, not a saturated token budget.
+
+### Changing the standards
+
+Three places control what gets into the catalogue. **After changing any of them, run
+`recompute_derived`** — it re-applies the gate to the whole catalogue for free, so raising standards
+cleans the site retroactively and lowering them un-parks products without re-fetching from Keepa.
+
+1. **Which categories** — `GIFT_SUITABLE_IDS` in `apps/catalog/categories.py`. 15 of Amazon's 36
+   Spanish roots are flagged gift-suitable. Libros, Moda, Alimentación and the digital storefronts
+   are deliberately excluded.
+2. **What counts as a gift** — `BLOCKED_PRODUCT_GROUPS` and `BLOCKED_BINDINGS` in the same file.
+   These match Keepa's `type` and `binding` fields (`BATTERY`, `PHYSICAL_MOVIE`, `blu_ray`, …) and
+   catch media and consumables that are filed under an allowed category. If junk appears in the
+   catalogue, find its `product_group` in Admin and add it here.
+3. **Quality floors** — `QualityGate` in `apps/catalog/services.py`: rating ≥ 4.2, ≥ 150 reviews,
+   ≥ €15, must have images and a brand. Per-run overrides are available via
+   `--payload '{\"min_rating\": 4.5}'`.
+
+**Price bands** are the exception: they live in Admin under **Search → Configuración de ranking**
+(`price_band_economico_max_cents`, `price_band_medio_max_cents`) so they can be changed without a
+deploy. Run `recompute_derived` afterwards.
+
+### Reading the result
+
+`Product.enrichment_status` tells you why a product is or is not served:
+
+- `PENDING` — passed the gate, waiting for enrichment. This is the servible catalogue.
+- `SKIPPED` — parked by the gate. `availability_note` says why, in Spanish. Never served, never
+  refreshed, never deleted.
+- `is_active = False` — different thing entirely: Keepa no longer returns this ASIN. Rows are never
+  deleted because `ClickEvent` protects them.
+
+Prices are stored in `price_cents` for banding and diversity only. **Never render a price
+anywhere** — Amazon Associates terms only permit displaying prices obtained through PA-API.
+
+---
+
 ## 6. Database access
 
 No `psql` is installed. Use an ephemeral psycopg session:

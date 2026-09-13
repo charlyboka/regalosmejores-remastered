@@ -117,6 +117,16 @@ class RankingConfig(models.Model):
     max_per_category = models.SmallIntegerField(default=3)
     cache_ttl_hours = models.IntegerField(default=24)
 
+    # Budget bands. Absolute euros on purpose: a shopper's wallet is absolute, so "económico"
+    # has to mean cheap, not "cheap for a camera". Category-relative spread is handled by the
+    # diversity pass instead. Changing these only needs `recompute_derived` afterwards.
+    price_band_economico_max_cents = models.IntegerField(
+        default=2500, help_text="Hasta este importe, ECONOMICO. Por defecto 25 €."
+    )
+    price_band_medio_max_cents = models.IntegerField(
+        default=7500, help_text="Hasta este importe, MEDIO. Por encima, PREMIUM. Por defecto 75 €."
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

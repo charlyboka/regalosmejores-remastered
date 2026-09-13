@@ -100,6 +100,7 @@ class KeepaProduct:
     is_adult: bool = False
     listed_since: Any = None
     variation_group_key: str = ""
+    binding: str = ""
     payload_hash: str = ""
 
     @property
@@ -316,7 +317,9 @@ class KeepaClient:
             manufacturer=_clean(raw.get("manufacturer")),
             model=_clean(raw.get("model")),
             parent_asin=_clean(raw.get("parentAsin")),
-            product_group=_clean(raw.get("productGroup")),
+            # Keepa stopped populating `productGroup` — it is null on every response now. `type`
+            # (PHYSICAL_MOVIE, DIGITAL_EBOOK, …) carries the same meaning and is still filled in.
+            product_group=_clean(raw.get("type") or raw.get("productGroup")),
             root_category_id=_positive(raw.get("rootCategory")),
             category_ids=[int(c) for c in (raw.get("categories") or []) if c],
             features=[f.strip() for f in (raw.get("features") or []) if f and f.strip()],
@@ -329,6 +332,7 @@ class KeepaClient:
             is_adult=bool(raw.get("isAdultProduct")),
             listed_since=_keepa_time(raw.get("listedSince")),
             variation_group_key=_variation_key(raw),
+            binding=_clean(raw.get("binding")),
             payload_hash=_content_hash(raw),
         )
 

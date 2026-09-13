@@ -1027,7 +1027,7 @@ DEFERRED with `attempts` back at 0; `demo_fail` → FAILED run, job requeued wit
 duplicate `dedupe_key` returned `None`; a job forced to RUNNING with a 2-hour-old lock was
 reclaimed to QUEUED; `manage.py dev` started both processes and stopped both cleanly.
 
-### Phase 4 — Ingestion (get products into the DB)
+### Phase 4 — Ingestion (get products into the DB) ✅ DONE
 - `seed_products` (Product Finder + quality filters), `hydrate_products` (batch ×100),
   `refresh_products`.
 - Keepa → `Product` mapping incl. `price_band`, `sales_rank_pct`, `variation_group_key`,
@@ -1035,6 +1035,61 @@ reclaimed to QUEUED; `manage.py dev` started both processes and stopped both cle
 - Scale `worker=1:basic` and let it run.
 - **Verify:** products accumulate steadily; token ledger matches Keepa's dashboard;
   no duplicate ASINs; variation groups populated.
+
+**Delivered.** `apps/catalog/categories.py` (frozen Keepa category tree for domain 9, 36 roots,
+15 flagged gift-suitable, plus type/binding blocklists), `apps/catalog/services.py`
+(`QualityGate`, `compute_sales_rank_pct`, `compute_quality_score`, `compute_price_band`,
+`apply_keepa_product`, `recompute_derived`, `apply_gate`) and
+`apps/pipelines/pipelines/ingest.py` with four pipelines: `seed_products` (50 / 6 h),
+`hydrate_products` (25 / 5 min), `refresh_products` (25 / 2 h), `recompute_derived` (daily).
+
+**Deviations from the plan above, and why:**
+1. **`Product.price_cents` added** (migration `catalog/0003`). Internal-only — never rendered in a
+   template or feed, because Amazon Associates terms only permit displaying PA-API prices. It
+   exists to compute bands, to spread prices in the diversity pass, and to re-band without
+   re-fetching from Keepa.
+2. **Band thresholds moved to `RankingConfig`** (`price_band_economico_max_cents` = 2500,
+   `price_band_medio_max_cents` = 7500, migration `search/0003`) so they are Admin-editable
+   without a deploy. They are deliberately *absolute* euros: a shopper's wallet is absolute, so
+   "económico" must mean cheap, not "cheap for a camera". Category-relative price spread is the
+   diversity pass's job (Phase 7), not the band's.
+3. **A fourth pipeline, `recompute_derived`**, beyond the three listed. It re-applies the bands,
+   `sales_rank_pct`, `quality_score` *and the quality gate* over the whole catalogue for zero
+   Keepa tokens, which is what makes the Admin-editable thresholds meaningful — raising standards
+   cleans the site retroactively without re-fetching anything.
+4. **`sales_rank_pct` uses real per-category product counts** from the frozen category tree rather
+   than a fixed denominator, so a rank of 5 000 means something different in Hogar y cocina
+   (51 M products) than in Videojuegos (457 K).
+5. **Out-of-scope products get `enrichment_status = SKIPPED`, not `is_active = False`.**
+   `is_active` stays reserved for "Keepa no longer returns this ASIN". Both are excluded by the
+   §6.4 hard filters, but the distinction keeps the audit trail honest. `refresh_products` skips
+   `SKIPPED` rows so we never spend tokens re-fetching something we will never serve.
+6. **`sales_rank_min = 150` and `min_price_cents = 1500` added to the Finder selection**, after the
+   first sample seed returned AA batteries, Kindles and Echo Dots. The top ~100 ranks of every
+   Amazon category are consumables, not gifts. The €15 floor is also enforced in `QualityGate`, so
+   it applies at serving time and not only at harvest time.
+7. **Keepa's `productGroup` is dead** — it is `null` on every response now. The field that carries
+   the same meaning is `type` (`BATTERY`, `TOY_BUILDING_BLOCK`, `PHYSICAL_MOVIE`, …), and it is far
+   more specific than `productGroup` ever was. `KeepaClient` now maps `type` onto
+   `Product.product_group`, and also stores `binding` (`blu_ray`, `tapa_blanda`, …) as a backstop.
+   `BLOCKED_PRODUCT_GROUPS` / `BLOCKED_BINDINGS` filter media and consumables that slip through the
+   category allowlist — a Blu-ray really is filed under Electrónica.
+8. **`Keepa referralFeePercent` deliberately not stored.** It is the fee Amazon charges the *seller*,
+   not the Associates commission. Commission rate is a function of the Associates category table
+   and will be derived from `root_category_id` in Phase 7.
+9. **Amazon first-party hardware is blocked** (`AMAZON_BOOK_READER`, `DIGITAL_DEVICE_3/4` — Kindle,
+   Echo, Fire TV). It passes every quality filter, but it earns 0% Associates commission in Spain
+   and has no discovery value: nobody needs this site to learn that a Kindle exists.
+
+**Verified live** on a deliberately small sample (the intended pace is a queue, never saturation):
+two `seed_products` runs created 100 stubs for 11 Keepa tokens each; three `hydrate_products` runs
+hydrated 75 products at exactly 4 tokens/ASIN. `recompute_derived` then parked 48 (38 `BATTERY`,
+9 Amazon devices, 1 Blu-ray) and left **27 genuine gifts** — LEGO, board games, Montessori sets,
+plush, chess, Tapo cameras — spread across all three price bands, quality 0.836–0.973, collapsing
+to a small set of `variation_group_key` values. Tightening the standards three times over the
+sample cost **zero Keepa tokens**, which is the whole point of `recompute_derived`. All four
+schedules registered with their crons.
+
 
 ### Phase 5 — Enrichment & embeddings
 - `enrich_products`: structured-output LLM call → 6–10 `ProductFacet` synthetic queries + controlled

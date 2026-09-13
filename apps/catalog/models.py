@@ -44,7 +44,12 @@ class Product(models.Model):
     manufacturer = models.CharField(max_length=255, blank=True, default="")
     model = models.CharField(max_length=255, blank=True, default="")
     parent_asin = models.CharField(max_length=10, blank=True, default="", db_index=True)
-    product_group = models.CharField(max_length=255, blank=True, default="")
+    product_group = models.CharField(
+        max_length=255, blank=True, default="", help_text="Keepa `type`, p. ej. PHYSICAL_MOVIE."
+    )
+    binding = models.CharField(
+        max_length=64, blank=True, default="", help_text="Keepa `binding`, p. ej. blu_ray."
+    )
     root_category_id = models.BigIntegerField(null=True, blank=True, db_index=True)
     category_ids = ArrayField(models.BigIntegerField(), default=list, blank=True)
     features = ArrayField(models.TextField(), default=list, blank=True)
@@ -57,6 +62,13 @@ class Product(models.Model):
     listed_since = models.DateTimeField(null=True, blank=True)
 
     # --- derived -----------------------------------------------------------------------
+    # Internal only. Never rendered in a template, never exposed in a feed, never cached for
+    # display: Amazon's Associates terms only permit showing prices obtained through PA-API.
+    # We keep it solely to compute `price_band`, to spread prices across a result grid, and to
+    # let band thresholds be re-tuned later without re-fetching every product from Keepa.
+    price_cents = models.IntegerField(
+        null=True, blank=True, help_text="Uso interno. Nunca se muestra al usuario."
+    )
     # NULL here means "not computed yet", which is distinct from any band. Hence null=True.
     price_band = models.CharField(  # noqa: DJ001
         max_length=16, choices=PriceBand, null=True, blank=True
