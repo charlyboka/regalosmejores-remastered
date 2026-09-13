@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+/* Tailwind v4 resolves @source relative to this file. */
+@source "../../templates";
+@source "../../apps";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}

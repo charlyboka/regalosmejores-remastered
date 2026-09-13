@@ -618,6 +618,7 @@ cleans the site retroactively.
 | `/buscador-avanzado/resultados/` | Advanced results (POST/session) | `noindex, nofollow` |
 | `/go/<click_id>/` | Affiliate redirect | blocked in `robots.txt` |
 | `/aviso-legal/` `/privacidad/` `/cookies/` `/afiliados/` `/contacto/` | Legal | `noindex` except `/afiliados/` |
+| `/healthz/` | Deploy health check, no DB access | blocked in `robots.txt` |
 | `/sitemap.xml`, `/robots.txt` | Generated | — |
 
 **Answering the AI-detection concern directly:** the risk is *indexing an unbounded long tail of
@@ -707,25 +708,17 @@ App `regalosmejores` (EU, `heroku-24`), `web:1`, Postgres `essential-0` (PG 18.3
 DB emptied and ready), Telegram bot configured, no Redis,
 no custom domain attached, pipeline `regalosmejores - production`.
 
-### Stage 0 — Foundation (do during implementation)
-1. `heroku config:set` the missing vars (§11).
-2. Add `worker` dyno type via `Procfile`; scale `heroku ps:scale web=1:basic worker=1:basic`.
+### Stage 0 — Foundation (at first deploy, not during local development)
+1. `heroku config:set` the missing vars — exact command in §13.A.
+2. Add the `worker` dyno type via `Procfile`; `heroku ps:scale web=1:basic worker=1:basic`.
 3. `release: python manage.py migrate --noinput` in the `Procfile`.
-4. Rewrite [.github/workflows/heroku-deploy.yml](.github/workflows/heroku-deploy.yml) — it is
-   currently from a different project (runs `alembic`, `mypy src`, `pytest`). New job:
-   `uv sync --locked` → `ruff check .` → `python manage.py check --deploy` → deploy.
-   **No tests.**
-5. Sentry (free tier) + Heroku Papertrail (free tier) for logs.
+4. GitHub Actions workflow — already rewritten for Django + uv, lint + `check --deploy` + deploy
+   with health check and automatic rollback. **No tests.**
+5. Optional: Sentry (free tier) + Heroku Papertrail (free tier) for logs.
 
 ### Stage 1 — Go live
-6. `heroku domains:add regalosmejores.com` and `www.regalosmejores.com` → note the DNS targets.
-7. Point Namecheap nameservers at **Cloudflare**, then in Cloudflare create `CNAME` records to the
-   Heroku DNS targets, **proxied**, SSL mode **Full (strict)**.
-8. Cloudflare: Cache Rule — cache `/`, `/regalos/*`, `/buscador-avanzado` HTML with
-   `Edge TTL 1h, Browser TTL 5m`; **bypass** cache for `/go/*`, `/admin/*`, `/buscar*`.
-   Enable Brotli, Early Hints, Auto Minify off (Tailwind is already minified).
-9. Verify in Google Search Console (DNS TXT via Cloudflare), submit sitemap.
-10. `heroku redirect` www→apex (or the reverse) — pick one canonical host and 301 the other.
+Full step-by-step (domain, Cloudflare, Search Console) is in **§13.B**. Canonical host is
+`www.regalosmejores.com`; the apex 301-redirects to it at the Cloudflare layer.
 
 ### Stage 2 — Growth triggers (act when the metric is hit, not before)
 | Trigger | Action |
@@ -750,6 +743,10 @@ no custom domain attached, pipeline `regalosmejores - production`.
 ## 11. Configuration
 
 ### Environment variables
+
+Vars marked **set me** on Heroku are intentionally deferred — see §13.A for the single
+`heroku config:set` command. Vars marked **add** in `.env` are needed for local development and
+are created in Phase 0.
 
 | Var | Local `.env` | Heroku | Notes |
 |---|---|---|---|
@@ -778,9 +775,11 @@ no custom domain attached, pipeline `regalosmejores - production`.
 
 ### Repository layout
 ```
-manage.py  Procfile  .python-version  pyproject.toml  uv.lock  tailwind.config.js
+manage.py  Procfile  .python-version  pyproject.toml  uv.lock  .env.example  .gitignore
+.github/workflows/heroku-deploy.yml
+scripts/    build_css.ps1  build_css.sh          # Tailwind v4 standalone CLI (no Node)
 config/
-  settings/{base,dev,prod}.py   urls.py   wsgi.py
+  settings/{base,dev,prod,ci}.py   urls.py   wsgi.py
 apps/
   clients/    keepa.py  llm.py  telegram.py  exceptions.py
   catalog/    models  admin  services/{ingest,enrich,scoring}.py
@@ -788,10 +787,14 @@ apps/
   search/     models  admin  services/{normalize,retrieval,ranking,diversity}.py  views.py
   pipelines/  base  registry  queue  scheduler  budget  worker  models  admin  pipelines/*.py
   tracking/   models  admin  views.py (go redirect)  middleware.py
-  web/        views  templatetags  templates/  components/
+  web/        views  urls  context_processors  templatetags
   seo/        sitemaps.py  robots.py  schema.py
-static/  templates/
-docs/project_blueprint.md
+static/
+  src/input.css            # Tailwind source (v4 CSS-first config, no tailwind.config.js)
+  css/site.css             # compiled, COMMITTED to git, CI fails if stale
+  js/htmx.min.js           # self-hosted, no CDN
+templates/   base.html  web/  components/
+docs/        project_blueprint.md  RUNBOOK.md
 ```
 
 ---
@@ -813,20 +816,111 @@ affiliate revenue per session. Add a second affiliate network (Awin) before addi
 
 ---
 
-## 13. Implementation plan
+## 13. Manual actions (owner — not code)
 
-Each phase is independently shippable and verifiable in production. No unit tests — validation is
-the "Verify" line of each phase, run manually against the live app/DB.
+Everything below is deliberately **outside** the implementation phases. Development happens
+locally against the production Heroku Postgres; nothing here blocks Phases 0–9.
 
-### Phase 0 — Project skeleton
-- `uv init`, `pyproject.toml`, `.python-version` (3.12), Django 5 project `config`, empty apps.
-- `config/settings/{base,dev,prod}.py`, `django-environ`, `dj-database-url`, `whitenoise`,
-  `gunicorn`, `psycopg[binary]`, `pgvector`, `httpx`, `python-slugify`, `ruff`.
-- `Procfile` (`release`, `web`, `worker`), Tailwind standalone CLI wired into a build script.
-- Rewrite the GitHub Actions workflow (lint + `check --deploy` + deploy, no tests).
-- Set all missing Heroku config vars.
-- **Verify:** `manage.py check --deploy` clean locally; deploy succeeds; `/admin/` reachable on the
-  herokuapp URL.
+### Already resolved
+Telegram bot is an admin of channel `-1002682055833` ✅ · GitHub secrets `HEROKU_API_KEY`,
+`HEROKU_APP_NAME`, `HEROKU_EMAIL` exist ✅ · AWS key rotated ✅ · stale blueprint copies deleted ✅.
+
+### A. Before the first Heroku deploy (end of Phase 0 / whenever we choose to deploy)
+
+Run once — copy-paste ready:
+
+```bash
+heroku config:set -a regalosmejores \
+  DJANGO_SECRET_KEY="<generate 50 random chars>" \
+  DJANGO_DEBUG=false \
+  DJANGO_ALLOWED_HOSTS="regalosmejores.com,www.regalosmejores.com,.herokuapp.com" \
+  SITE_URL="https://www.regalosmejores.com" \
+  OPENAI_API_KEY="<from .env>" \
+  OPENAI_DEFAULT_MODEL="gpt-5.6-luna" \
+  OPENAI_EMBEDDING_MODEL="text-embedding-3-small" \
+  OPENAI_EMBEDDING_DIMENSIONS=512 \
+  KEEPA_API_KEY="<from .env>" \
+  KEEPA_DOMAIN_ID=9 \
+  KEEPA_TOKEN_RESERVE=20 \
+  AMAZON_MARKETPLACE_HOST="www.amazon.es" \
+  LLM_DAILY_BUDGET_USD=5 \
+  MAX_HYDRATION_BACKLOG=5000 \
+  PIPELINES_ENABLED=true \
+  SESSION_SALT="<generate 32 random chars>"
+
+heroku config:unset -a regalosmejores DEBUG      # replaced by DJANGO_DEBUG
+heroku ps:scale -a regalosmejores web=1:basic worker=1:basic
+```
+
+Then confirm the Heroku Python buildpack picked up `uv.lock`
+(`heroku logs --tail` during build should mention `uv`). If it does not, commit a fallback:
+`uv export --no-dev --format requirements-txt > requirements.txt`.
+
+### B. At go-live (Phase 10)
+
+**Canonical host: `www.regalosmejores.com`.** Google treats www and apex as equivalent for
+ranking, so this is chosen on operational grounds: Heroku's SSL/DNS targets are `CNAME`-based and
+apex `CNAME` is non-standard, and a `www` host keeps cookies off the apex domain (useful if a
+subdomain is ever added). The apex 301-redirects to `www`.
+
+1. `heroku domains:add www.regalosmejores.com -a regalosmejores`
+   `heroku domains:add regalosmejores.com -a regalosmejores`
+   → note the two DNS targets Heroku prints.
+2. Create a Cloudflare account, add `regalosmejores.com`, and change the nameservers at Namecheap
+   to the two Cloudflare NS records. Propagation is usually under an hour.
+3. In Cloudflare DNS: `CNAME www → <heroku www target>` (proxied) and
+   `CNAME @ → <heroku apex target>` (proxied, CNAME flattening handles apex).
+4. SSL/TLS mode **Full (strict)**. Enable Always Use HTTPS, Brotli, Early Hints.
+5. Cache Rules — cache `/`, `/regalos/*`, `/buscador-avanzado`: Edge TTL 1h, Browser TTL 5m.
+   Bypass cache on `/go/*`, `/admin/*`, `/buscar*`, `/healthz*`.
+6. Redirect Rule: `regalosmejores.com/*` → `https://www.regalosmejores.com/$1`, 301.
+7. Google Search Console: add the **domain property**, verify via Cloudflare DNS TXT, submit
+   `https://www.regalosmejores.com/sitemap.xml`.
+8. Update `SITE_URL` and `DJANGO_ALLOWED_HOSTS` if anything above changed.
+
+### C. Optional / later
+Sentry project + `SENTRY_DSN` · Heroku Papertrail add-on (free tier) · Amazon Associates dashboard
+check that `ascsubtag` values are appearing in reports · Awin ES application.
+
+---
+
+## 14. Implementation plan
+
+Each phase is independently shippable and verifiable. No unit tests — validation is the **Verify**
+line of each phase, run manually. Development runs locally against the production Heroku Postgres
+(`DATABASE_URL` in `.env`); deployment to Heroku is deferred until we choose to do it.
+
+### Phase 0 — Project skeleton ✅ DONE
+- `pyproject.toml`, `.python-version` (3.12), Django 5.2 project `config`, empty apps
+  (`clients`, `catalog`, `topics`, `search`, `pipelines`, `tracking`, `web`, `seo`).
+- Dependencies: `django`, `psycopg[binary]`, `pgvector`, `django-environ`, `gunicorn`,
+  `whitenoise`, `httpx`, `openai`, `python-slugify`, `croniter`; dev: `ruff`.
+  (`dj-database-url` dropped — `django-environ`'s `env.db()` already parses `DATABASE_URL`.)
+- `config/settings/{base,dev,prod,ci}.py`. `dev` and `prod` both read `DATABASE_URL`; **local dev
+  points at the production Heroku Postgres** (accepted decision). `ci` inherits `prod` (so
+  `check --deploy` is meaningful) with a dummy DB URL and never connects.
+- `Procfile`:
+  ```
+  release: python manage.py migrate --noinput
+  web: gunicorn config.wsgi --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile -
+  worker: python manage.py run_worker
+  ```
+  `run_worker` does not exist until Phase 5 — do not scale the worker dyno before then.
+- Tailwind **v4** standalone CLI pinned to `v4.3.3`: `static/src/input.css` → `static/css/site.css`
+  (**committed**, since there is no Node buildpack). v4 is CSS-first, so there is no
+  `tailwind.config.js`; template paths are declared with `@source` inside `input.css`.
+  `scripts/build_css.ps1` + `scripts/build_css.sh` download and run the pinned binary into
+  `.tools/` (gitignored). The same version is pinned as `TAILWIND_VERSION` in the CI workflow.
+- htmx 2.0.8 self-hosted at `static/js/htmx.min.js` (no CDN, no third-party request).
+- `/healthz/` view returning `200 {"status":"ok"}` without touching the DB (used by the deploy
+  health check) and exempt from `SECURE_SSL_REDIRECT`.
+- GitHub Actions workflow rewritten for this stack — see
+  [.github/workflows/heroku-deploy.yml](.github/workflows/heroku-deploy.yml).
+- **No Heroku work in this phase.** Config vars and dyno scaling happen at deploy time (§13.A).
+- **Verified:** `check` and `check --deploy` clean · `migrate` applied Django's own tables to the
+  prod DB · `runserver` served `/healthz/` (`{"status": "ok"}`), `/` and `/admin/login/` with 200 ·
+  `ruff check .` and `ruff format --check .` clean · `static/css/site.css` built.
+- Operational documentation: [docs/RUNBOOK.md](RUNBOOK.md).
 
 ### Phase 1 — Data model
 - All models from §4, with `pgvector` `HalfVectorField`, HNSW + GIN + trigram indexes via
@@ -914,13 +1008,5 @@ start the article pipeline (max 1/day, irregular times, human-reviewed).
 
 ---
 
-## 14. Open items requiring the owner
-
-1. Set the missing Heroku config vars listed in §11 (I can run these once approved).
-2. Confirm the Telegram bot is an **admin** of channel `-1002682055833`.
-3. Confirm GitHub repo secrets exist: `HEROKU_API_KEY`, `HEROKU_APP_NAME`, `HEROKU_EMAIL`.
-4. Decide canonical host: `www.regalosmejores.com` or apex.
-5. Create a Cloudflare account and move Namecheap nameservers when Phase 10 starts.
-6. Rotate the AWS access key in `.env`/Heroku — it has been handled in plaintext.
-7. Delete the stale `docs/project_blueprint copy*.md` files once this document is accepted, so
-   Copilot has a single source of truth.
+**Start here:** Phase 0. Everything needed to begin is in this document; the only external
+dependency is the owner checklist in §13, none of which blocks Phases 0–9.

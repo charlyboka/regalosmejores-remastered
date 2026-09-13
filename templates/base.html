@@ -1,0 +1,41 @@
+{% load static %}<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ SITE_NAME }}{% endblock %}</title>
+  <meta name="description" content="{% block meta_description %}Ideas de regalo seleccionadas para cada ocasión, persona y afición.{% endblock %}">
+  {% block robots %}<meta name="robots" content="index, follow, max-image-preview:large">{% endblock %}
+  <link rel="canonical" href="{% block canonical %}{{ CANONICAL_URL }}{% endblock %}">
+  <link rel="stylesheet" href="{% static 'css/site.css' %}">
+  {% block head_extra %}{% endblock %}
+</head>
+<body class="min-h-screen flex flex-col bg-white text-slate-800 antialiased">
+
+  <header class="border-b border-slate-200">
+    <div class="mx-auto max-w-5xl px-4 py-4 flex items-center justify-between">
+      <a href="{% url 'web:home' %}" class="text-lg font-semibold tracking-tight">{{ SITE_NAME }}</a>
+      {% block header_extra %}{% endblock %}
+    </div>
+  </header>
+
+  <main class="flex-1">
+    <div class="mx-auto max-w-5xl px-4 py-8">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+
+  <footer class="border-t border-slate-200 mt-12">
+    <div class="mx-auto max-w-5xl px-4 py-6 text-sm text-slate-500 space-y-2">
+      <p>
+        En calidad de Afiliado de Amazon, {{ SITE_NAME }} obtiene ingresos por las compras
+        adscritas que cumplen los requisitos aplicables.
+      </p>
+      <p>&copy; {% now "Y" %} {{ SITE_NAME }}</p>
+    </div>
+  </footer>
+
+  <script src="{% static 'js/htmx.min.js' %}" defer></script>
+  {% block body_extra %}{% endblock %}
+</body>
+</html>

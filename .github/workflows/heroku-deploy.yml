@@ -3,46 +3,96 @@ name: CI and deploy to Heroku
 on:
   push:
     branches:
-      - main 
+      - main
+  workflow_dispatch:
+
+# Never let two deploys race each other onto the same dyno.
+concurrency:
+  group: heroku-deploy-main
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  # Settings module used only for static validation. It never opens a DB connection.
+  DJANGO_SETTINGS_MODULE: config.settings.ci
+  # Must match the version pinned in scripts/build_css.ps1 and scripts/build_css.sh,
+  # otherwise the CSS staleness check below produces false failures.
+  TAILWIND_VERSION: v4.3.3
 
 jobs:
-  deploy:
+  validate:
+    name: Lint and Django checks
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version-file: '.python-version'
-
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          python-version-file: .python-version
 
       - name: Install locked dependencies
-        run: uv sync --locked --group dev
+        run: uv sync --locked
 
-      - name: Validate project
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Tailwind CSS is up to date
+        # static/css/site.css is committed because there is no Node buildpack on Heroku.
+        # This fails the build if someone edited templates without rebuilding the CSS.
+        run: |
+          curl -sSL -o tailwindcss \
+            "https://github.com/tailwindlabs/tailwindcss/releases/download/${TAILWIND_VERSION}/tailwindcss-linux-x64"
+          chmod +x tailwindcss
+          ./tailwindcss -i ./static/src/input.css -o /tmp/site.css --minify
+          if ! diff -q /tmp/site.css static/css/site.css > /dev/null; then
+            echo "::error::static/css/site.css is stale. Run scripts/build_css.sh and commit the result."
+            exit 1
+          fi
+
+      - name: Django system checks
         env:
-          DATABASE_URL: sqlite:///./ci.db
+          DJANGO_SECRET_KEY: ci-only-not-a-real-secret
+          DJANGO_DEBUG: "false"
+          DJANGO_ALLOWED_HOSTS: www.regalosmejores.com
+          SITE_URL: https://www.regalosmejores.com
+          DATABASE_URL: postgres://ci:ci@localhost:5432/ci
+          OPENAI_API_KEY: ci-placeholder
+          KEEPA_API_KEY: ci-placeholder
+          TELEGRAM_BOT_TOKEN: ci-placeholder
+          TELEGRAM_CHANNEL_ID: "0"
+          SESSION_SALT: ci-placeholder
         run: |
-          uv run ruff check .
-          uv run mypy src
-          uv run pytest --cov --cov-report=term-missing
-          uv run alembic upgrade head
-          uv run alembic check
+          uv run python manage.py check --deploy
+          uv run python manage.py makemigrations --check --dry-run
 
-      - name: Install Heroku CLI
-        run: |
-          curl https://cli-assets.heroku.com/install.sh | sh
+  deploy:
+    name: Deploy to Heroku
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # heroku-deploy pushes the git history, so a shallow clone is not enough.
+          fetch-depth: 0
 
-      - name: Deploy to Heroku
-        uses: akhileshns/heroku-deploy@v3.12.14
+      - name: Deploy
+        uses: akhileshns/heroku-deploy@v3.13.15
         with:
           heroku_api_key: ${{ secrets.HEROKU_API_KEY }}
           heroku_app_name: ${{ secrets.HEROKU_APP_NAME }}
           heroku_email: ${{ secrets.HEROKU_EMAIL }}
-          usedocker: false   
+          branch: main
+          usedocker: false
+          # Migrations run in the Procfile release phase; a failing release aborts the deploy.
+          healthcheck: https://regalosmejores-8275e471127c.herokuapp.com/healthz/
+          checkstring: ok
+          delay: 10
+          rollbackonhealthcheckfailed: true
