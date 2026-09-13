@@ -207,12 +207,20 @@ you never touch them; these are the manual equivalents.
 | `hydrate_products` | `*/5 * * * *` | 25 | Fetches full data for stubs that have never been fetched. **Exactly 4 tokens per ASIN.** |
 | `refresh_products` | `0 */2 * * *` | 25 | Re-fetches anything older than 30 days. Skips parked products. 4 tokens per ASIN. |
 | `recompute_derived` | `20 1 * * *` | 5000 | Re-derives bands, `sales_rank_pct`, `quality_score` and re-applies the quality gate. **Zero tokens.** |
+| `enrich_products` | `*/15 * * * *` | 10 | LLM writes 6–8 synthetic gift queries per product, then embeds them. **~$0.001 per product.** |
 
 ```powershell
 uv run python manage.py run_pipeline seed_products
 uv run python manage.py run_pipeline hydrate_products --max-items 25
 uv run python manage.py run_pipeline refresh_products --payload '{\"refresh_after_days\": 0}'
 uv run python manage.py run_pipeline recompute_derived
+```
+
+```powershell
+# Enrichment. Costs money, so these are the ones to be deliberate about.
+uv run python manage.py run_pipeline enrich_products --max-items 10
+uv run python manage.py run_pipeline enrich_products --payload '{\"retry_failed\": true}'
+uv run python manage.py run_pipeline enrich_products --payload '{\"reenrich\": true}' --max-items 20
 ```
 
 **Pace.** Keepa refills 21 tokens/minute ≈ 1 260/hour, and hydration costs 4 tokens per product, so
@@ -240,6 +248,17 @@ cleans the site retroactively and lowering them un-parks products without re-fet
 (`price_band_economico_max_cents`, `price_band_medio_max_cents`) so they can be changed without a
 deploy. Run `recompute_derived` afterwards.
 
+### Changing what products are tagged with
+
+`apps/catalog/vocabularies.py` holds the three controlled vocabularies — occasions, recipients,
+interests. They are the shared language of the site: the enrichment LLM may only tag with these
+keys, advanced search offers exactly these as chips, and topics are tagged with them too.
+
+**Never rename a key** once products are tagged with it — add a new one instead. Renaming silently
+orphans every product carrying the old key. After adding keys or editing the prompt in
+`apps/catalog/enrichment.py`, re-run enrichment with `{"reenrich": true}`; unlike `recompute_derived`
+this one costs money (~$0.001 per product), so do it in batches with `--max-items`.
+
 ### Reading the result
 
 `Product.enrichment_status` tells you why a product is or is not served:
@@ -247,11 +266,77 @@ deploy. Run `recompute_derived` afterwards.
 - `PENDING` — passed the gate, waiting for enrichment. This is the servible catalogue.
 - `SKIPPED` — parked by the gate. `availability_note` says why, in Spanish. Never served, never
   refreshed, never deleted.
+- `DONE` — enriched and embedded. **Only these can be returned by search.**
+- `FAILED` — the model could not write usable queries for it. Not retried automatically; the reason
+  is in the pipeline run's `generate` step context.
 - `is_active = False` — different thing entirely: Keepa no longer returns this ASIN. Rows are never
   deleted because `ClickEvent` protects them.
 
 Prices are stored in `price_cents` for banding and diversity only. **Never render a price
 anywhere** — Amazon Associates terms only permit displaying prices obtained through PA-API.
+
+---
+
+## 5c. Search
+
+### Trying a query
+
+```powershell
+uv run python manage.py search "regalo para mi madre que le gusta la jardineria"
+uv run python manage.py search "juguete creativo" --limit 5 --explain --no-cache
+```
+
+`--explain` prints the facet that matched, which is usually the fastest way to understand why a
+product appeared. `--no-cache` bypasses `SearchResultCache`; use it whenever you are tuning,
+otherwise you are grading yesterday's ordering.
+
+Each result shows its full score breakdown:
+
+```
+sim=0.873 lex=1.000 qual=0.836 ctr=0.000 fresh=1.000 -> 0.8102  [fuzzy+lexical+semantic]
+```
+
+- `sim` — cosine similarity to the best matching facet. The honest relevance number.
+- `lex` — the product's fused rank score, rescaled against the best in the pool.
+- `qual` — `quality_score`, from rating, review count and sales rank.
+- `ctr` — click-through performance. **0.000 for everything until Phase 9 ships tracking.**
+- `fresh` — decays from 1.0 to a 0.6 floor over ~90 days since the last Keepa fetch.
+- The bracket lists which of the three retrieval arms found it.
+
+### Tuning the ranking
+
+```powershell
+uv run python manage.py search_report              # 40 queries, full output
+uv run python manage.py search_report --quiet      # just the summary
+```
+
+Change a weight in Admin → *Búsqueda* → *Configuración de ranking*, re-run, compare. The summary
+reports the three things that actually indicate breakage: **duplicated variation families** (must
+always be zero), **zero-result queries**, and **latency**. Nothing needs a deploy or a restart —
+`RankingConfig` is read on every search.
+
+Weights are currently at their defaults and deliberately untuned: with a catalogue this small
+there is not enough signal to tune them honestly. Revisit once there are thousands of enriched
+products and real click data.
+
+### Two things that will bite you
+
+**The FTS config must match the index.** `retrieval.FTS_CONFIG` is `spanish_unaccent`, created in
+catalog migration `0005`. If you change one and not the index on `ProductFacet`, Postgres will not
+error — it will quietly stop using the index and sequential-scan every facet.
+
+**The relevance floor is load-bearing.** `retrieval._is_relevant` drops any candidate that has
+neither a semantic match above `min_facet_similarity` nor a full-text hit. Remove it and the
+highest-quality products in the catalogue start answering every unrelated query, because without
+a similarity score they are ranked on quality alone. If results suddenly look plausible-but-wrong,
+check this first.
+
+### Latency
+
+An uncached search is dominated by the OpenAI embedding call (~375 ms warm, ~7 s on the very first
+call of a process — which is why the client is shared and warmed at startup). Locally, add ~79 ms
+per database round trip and there are six; on a dyno next to the database that part is negligible.
+Cached searches skip the embedding entirely.
 
 ---
 

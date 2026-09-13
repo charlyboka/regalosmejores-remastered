@@ -166,7 +166,7 @@ class ProductFacet(models.Model):
                 ef_construction=64,
                 opclasses=["halfvec_cosine_ops"],
             ),
-            GinIndex(SearchVector("text", config="spanish"), name="facet_text_fts_idx"),
+            GinIndex(SearchVector("text", config="spanish_unaccent"), name="facet_text_fts_idx"),
             GinIndex(fields=["text"], name="facet_text_trgm_idx", opclasses=["gin_trgm_ops"]),
             GinIndex(fields=["occasions"], name="facet_occasions_idx"),
             GinIndex(fields=["recipients"], name="facet_recipients_idx"),

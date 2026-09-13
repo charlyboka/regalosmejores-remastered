@@ -564,7 +564,7 @@ apps/pipelines/
 |---|---|---|---|---|
 | `seed_products` | **Product Finder** harvest: structured filters → bulk candidate ASINs | `0 */6 * * *` | yes | no |
 | `hydrate_products` | Fetch full Keepa data for ASINs with no/stale `keepa_fetched_at`, batched ×100 | `*/5 * * * *` | **yes (main consumer)** | no |
-| `enrich_products` | Generate `ProductFacet` synthetic queries + tags, then embed | `*/10 * * * *` | no | yes |
+| `enrich_products` | Generate `ProductFacet` synthetic queries + tags, then embed | `*/15 * * * *` | no | yes |
 | `generate_topics` | Propose new Topics: gaps vs existing coverage + seasonal calendar | `0 3 * * *` | no | yes |
 | `mine_query_demand` | Roll `UserQuery` → `QueryDemand`; promote high-demand unmatched queries to Topic candidates | `30 2 * * *` | no | no |
 | `decompose_topic` | Topic → Amazon `SearchTerm`s | on demand / `0 4 * * *` | no | yes |
@@ -572,6 +572,8 @@ apps/pipelines/
 | `curate_topics` | Recompute `ProductTopicLink` + quality gate + `is_indexable` | `0 5 * * *` | no | no |
 | `dedupe_topics` | Flag near-duplicate topics for merge | `0 6 * * 1` | no | no |
 | `refresh_products` | Re-fetch products older than 30 days; deactivate dead ASINs | `0 */2 * * *` | yes | no |
+| `recompute_derived` | Re-derive bands / `sales_rank_pct` / `quality_score` and re-apply the quality gate | `20 1 * * *` | no | no |
+| `prune_catalog` | Delete products that will never earn their storage back (§7.5) | `0 2 * * 0` | no | no |
 | `recompute_ctr` | Rebuild `ctr_score` from `ClickEvent` | `0 1 * * *` | no | no |
 | `daily_digest` | Telegram summary | `0 6 * * *` | no | no |
 
@@ -614,6 +616,39 @@ ASINs for roughly the cost of one keyword search. Strategy: **harvest in bulk, h
 
 The same filters are re-applied as a hard gate at `curate_topics` time, so raising standards later
 cleans the site retroactively.
+
+### 7.5 Retention — what leaves the catalogue, and why
+
+The catalogue must not grow forever. Counter-intuitively **the binding constraint is disk, not
+Keepa tokens**, and that shapes the whole policy:
+
+- **Refreshing is cheap.** A 20k catalogue refreshed every 90 days is 222 products/day × 4 tokens
+  = ~900 tokens/day, about 3 % of the 30 240 that refill daily. Even a 30-day cycle is only ~9 %.
+  There is no token argument for refreshing less often; the cadence should be set by how fast
+  Amazon prices and ranks actually drift, not by budget.
+- **Storing is expensive.** An enriched product costs ~20 KB — mostly its 8 facet vectors and
+  their HNSW index entries (§14 Phase 5 capacity note). That is what fills a 1 GB plan at
+  ~20–25k products.
+
+So the lever is eviction, not throttling. `prune_catalog` runs weekly and **deletes** (not
+deactivates) products that will never earn their storage back:
+
+1. `is_active = False` for > 60 days — Keepa has not returned the ASIN in two months; it is gone.
+2. `SKIPPED` by the quality gate for > 90 days — it failed the standards and nothing has changed.
+3. `FAILED` enrichment for > 90 days — the model could not describe it twice; a human has not
+   intervened.
+4. `DONE` but zero clicks **and** zero impressions for > 180 days, *and* below the median
+   `quality_score` — it occupies index space and has never once been useful.
+
+Rules 1–3 are safe to automate. **Rule 4 is not**: it needs the impression data from Phase 8, and
+a product with no impressions may simply never have been *shown* rather than never wanted. It
+stays behind a `dry_run` option that reports what it would delete, until we have enough traffic to
+trust it.
+
+Deletion cascades to `ProductFacet`, which is where the space actually is. It is blocked by
+`ClickEvent`'s `PROTECT`, which is the desired behaviour: **a product anybody ever clicked is never
+deleted**, because that would destroy the click history the CTR score is built from. `prune_catalog`
+therefore excludes anything with clicks and reports the count it skipped for that reason.
 
 ---
 
@@ -1091,7 +1126,7 @@ sample cost **zero Keepa tokens**, which is the whole point of `recompute_derive
 schedules registered with their crons.
 
 
-### Phase 5 — Enrichment & embeddings
+### Phase 5 — Enrichment & embeddings ✅ DONE
 - `enrich_products`: structured-output LLM call → 6–10 `ProductFacet` synthetic queries + controlled
   vocabulary tags → batch embed at 512 dims → store as `halfvec`.
 - Controlled vocabularies for occasion / recipient / interest defined as Python constants + Admin
@@ -1099,19 +1134,129 @@ schedules registered with their crons.
 - **Verify:** spot-check 20 products in Admin — facets read like real user queries, tags are sane,
   cost per product is within expectation (log it in the digest).
 
-### Phase 6 — Topics & curation
+**Delivered.** `apps/catalog/vocabularies.py` (19 occasions, 26 recipients, 70 interests, all
+ASCII-slug keys with Spanish labels), `apps/catalog/enrichment.py` (prompt, strict JSON schema,
+validation) and `apps/pipelines/pipelines/enrich.py` (`enrich_products`, `*/15 * * * *`, 10/run).
+
+**Deviations, and why:**
+1. **Two facet types, not three.** `SYNTHETIC_QUERY` (6–8) plus one `SUMMARY` at weight 0.6.
+   `GIFT_ANGLE` stays in the enum but is unused: every extra facet is another halfvec row *and*
+   another HNSW index entry, and the storage maths below does not leave room for a third type.
+2. **The vocabulary legend is in the prompt.** The schema's `enum` constrains the model to valid
+   keys, but a key is a slug — nothing in `nino` says "6–11 años". Without the legend the model
+   tagged a 4-year-old LEGO set as `nino` instead of `nino-pequeno`. Sending ~1 400 tokens of
+   `clave = significado` fixed it and raised cost per product from $0.0011 to $0.0014. Worth it:
+   these tags are the hard filters behind advanced search, so a wrong tag is a wrong result.
+3. **Life stages live in `RECIPIENTS`.** Keepa gives no reliable per-product age, so the "Edad"
+   slot in §6.5 resolves to recipient keys (`bebe`, `nino-pequeno`, `nino`, `adolescente`, …)
+   rather than a numeric range.
+4. **All-or-nothing per product.** If the model returns fewer than `min_queries` usable queries,
+   the product is marked `FAILED` and *no* facets are written. A half-enriched product would rank
+   badly forever and look like a search bug rather than an enrichment bug.
+5. **`FAILED` is not retried automatically.** It needs `--payload '{"retry_failed": true}'`.
+   Retrying a product the model cannot describe, every 15 minutes, forever, is an unbounded bill.
+6. **Enrichment failures never touch `availability_note`.** That field belongs to the quality gate
+   and `recompute_derived` rewrites it; the failure reason goes in the `PipelineStepRun` context.
+7. **`reenrich` option** re-runs products that are already `DONE` — the switch to pull after
+   changing the prompt or the vocabularies. Facets are replaced, not merged: the LLM returns no
+   stable identity across runs, so there is nothing to match old rows against.
+
+**Verified live** on all 27 servible products: **218 facets, 0 without an embedding**, 8.1 facets
+per product, **$0.0247 total — $0.00095 per product**, zero failures. Spot-checked output reads
+like real queries ("regalo de reyes para una niña que inventa historias"), not restated titles.
+A live cosine search over the facets returned sensible products for three unseen queries at
+similarity 0.61–0.80, confirming the query↔query premise of §6.1 end to end.
+
+> **Capacity note, for Phase 10.** At 8.1 facets/product a `halfvec(512)` row plus its HNSW index
+> entry costs roughly 2.5 KB. That puts the practical ceiling of Heroku `essential-0` (1 GB) at
+> **~20–25k enriched products**, not the 50k §6.2 assumed — §6.2 counted vector data but not the
+> index. Options when we approach it: drop to 6 facets, cap the catalogue, or move to
+> `standard-0` (4 GB). Not urgent, but it is the first limit we will hit.
+
+### Phase 6 — Search engine (no UI yet) ✅ DONE
+
+> **Swapped with Topics.** This was Phase 7. §6.6 defines `curate_topics` as "re-runs full
+> retrieval for a Topic", so Topics depends on the retrieval stack. Building Topics first would
+> have meant a throwaway retrieval or a stubbed `curate_topics`. The two phases are built back to
+> back, retrieval first.
+
+Built: `apps/search/normalize.py`, `retrieval.py`, `ranking.py`, `engine.py`, plus
+`manage.py search` (single query, score breakdown) and `manage.py search_report` (40-query batch
+with a quality summary). Diversity lives in `ranking.py` rather than a separate `diversity.py` —
+it shares the `Result` dataclass and is 60 lines; a separate module would have been indirection
+for its own sake.
+
+**Deviations from the spec, and why:**
+
+1. **Two normalisations, not one.** §6.3 L0 says "lowercase, unaccent, collapse, strip stopwords".
+   Stripping stopwords before embedding would destroy the signal the facets were written to match
+   — "regalo para mi madre" and "regalo madre" are not the same sentence to an embedding model.
+   So `normalize()` (accent- and punctuation-free, word order intact) is what gets embedded, and
+   `cache_key()` applies stopword stripping on top, purely so phrasings of the same intent share
+   one cache entry and one `QueryDemand` row.
+2. **A Spanish *unaccented* FTS configuration was required.** The index built in Phase 1 used the
+   stock `spanish` config, which preserves accents, while queries arrive accent-free. The lexical
+   arm therefore matched nothing on any query containing an accented word — which in Spanish is
+   most of them — and only the trigram arm was firing, by accident. Catalog migration `0005`
+   creates `spanish_unaccent` (`unaccent` + `spanish_stem`) and rebuilds `facet_text_fts_idx`
+   against it. `retrieval.FTS_CONFIG` must always equal the index expression or Postgres silently
+   sequential-scans.
+3. **A relevance floor was added, and it is the most important line in the engine.**
+   `min_facet_similarity` originally only bounded the semantic arm, so a product that tripped only
+   the trigram arm entered the pool with `similarity = 0` and was then ranked on quality and
+   freshness alone. In practice that meant the highest-rated product in the catalogue answered
+   every query it had no business answering — a security camera was the fourth result for
+   "regalo para alguien que le encanta cocinar". `retrieval._is_relevant` now requires either a
+   real semantic match or a full-text hit (`websearch` requires every term, so it is trustworthy
+   on its own). Trigram can no longer promote a candidate by itself. An empty result page is
+   recoverable; a confident, irrelevant one is not.
+4. **Trigram threshold raised 0.2 → 0.45.** Spanish gift queries share heavy boilerplate
+   ("regalo para … que le gusta …"), so a loose threshold makes every facet resemble every query.
+5. **The category cap scales with page size**, `max(config.max_per_category, ceil(limit/3))`.
+   The absolute 3 was written for a 24-result page, where it would have answered "regalo para un
+   niño" with 3 toys and 21 unrelated products — the category usually *is* the query. Brand stays
+   absolute at 2, because two of the same brand is two too many at any page size. The Admin value
+   now acts as a floor, so small pages keep the tighter spread.
+6. **RRF contributions are capped at one per product per list.** A product with eight facets would
+   otherwise accumulate eight contributions and outrank a better product that matched on one.
+7. **The result cache stores ordering, not products.** Product rows are re-read live and the hard
+   filters re-applied on read, so a product deactivated or blocked after caching is never served.
+   Caching rendered products would have served it for up to `cache_ttl_hours`.
+8. **One shared `LLMClient`, warmed at startup.** Opening the TLS connection measured **6.9 s cold
+   versus 375 ms warm** — a per-process cost, not a per-call one. `SearchConfig.ready()` warms it
+   in a daemon thread for `gunicorn`/`runserver` only (`DISABLE_SEARCH_WARMUP` opts out), costing
+   one embedding call per dyno boot.
+
+**Verified live** against production: 40 real-sounding Spanish queries (accents, typos, vague
+intent) via `manage.py search_report`. **Zero duplicate variation families across all 40** — the
+11-product FUNNYB&G craft-kit family collapses to one result every time. 39 of 40 returned
+results; the one that did not ("regalo para mi jefe") correctly returns nothing, because a
+27-product toy catalogue genuinely contains no boss-appropriate gift. Before the relevance floor
+the same batch averaged 11.3 results per query; after, 6.5 — the difference was entirely junk.
+
+**On the < 200 ms p50 target:** measured p50 is 1 062 ms locally, but that is not the engine.
+A single database round trip from this machine to Heroku Postgres EU measures **79 ms**, and a
+search makes six; embedding adds ~375 ms warm. On a dyno sitting next to the database those six
+round trips cost single-digit milliseconds, putting an uncached search at roughly **400 ms,
+dominated entirely by the OpenAI embedding call**, and a cached one in single digits. The < 200 ms
+target is therefore only achievable on cache hits. This is acceptable — the cache absorbs repeat
+traffic and no chat-completion call ever touches the request path — but it should be re-measured
+on the dyno in Phase 10 rather than assumed.
+
+**Still open, deliberately:** ranking weights are untuned. With 27 enriched products there is not
+enough signal to tune them honestly, and `ctr_score` is 0.000 for every product until Phase 9
+collects clicks. Re-run `manage.py search_report` and tune from Admin once the catalogue is in the
+thousands.
+
+### Phase 7 — Topics & curation
 - Manual Topic creation in Admin (must work before any LLM generation).
 - `decompose_topic`, `run_search_terms`, `generate_topics`, `curate_topics`, `dedupe_topics`.
+- `curate_topics` calls the Phase 6 retrieval stack directly — one ranking implementation, used
+  by both the live search path and curation, so a topic page can never disagree with search.
 - Quality gate + `is_indexable` computation.
 - **Seed 30–50 topics by hand** covering the biggest occasions/recipients.
 - **Verify:** each seeded topic has ≥12 diverse, genuinely relevant products; `is_indexable`
   flips correctly; pinning/excluding survives a recompute.
-
-### Phase 7 — Search engine (no UI yet)
-- `normalize`, `retrieval` (HNSW + FTS + trigram + RRF), `ranking`, `diversity`, result cache.
-- `manage.py search "<query>"` printing ranked results with score breakdown.
-- **Verify:** run ~40 real-sounding Spanish queries; tune `RankingConfig` weights from Admin until
-  results are good; confirm p50 latency < 200 ms.
 
 ### Phase 8 — Public site
 - Base layout, header with embedded simple-search component, footer, Tailwind design tokens.
@@ -1142,6 +1287,13 @@ schedules registered with their crons.
 Publish ≤10 topics/day · review `QueryDemand` weekly and promote real demand into Topics ·
 tune ranking weights from click data · raise Keepa plan if the backlog grows · then, and only then,
 start the article pipeline (max 1/day, irregular times, human-reviewed).
+
+**`prune_catalog` (§7.5) belongs here, not earlier.** Rules 1–3 (dead ASINs, long-parked, long-
+failed) can be enabled as soon as there is anything old enough to match. Rule 4 — evicting
+enriched products with no clicks and no impressions — needs Phase 9 tracking data and enough
+traffic to distinguish "nobody wanted it" from "nobody was ever shown it", so it stays in `dry_run`
+until then. Watch DB size in the daily digest: at ~20 KB per enriched product, `essential-0` fills
+at ~20–25k products and that, not the Keepa budget, is what caps the catalogue.
 
 ---
 
