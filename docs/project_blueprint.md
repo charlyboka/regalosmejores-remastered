@@ -1364,11 +1364,15 @@ anchors, all 85 through `/go/` and all 85 `rel="nofollow sponsored"`. Advanced s
 POST → 302 → results with `noindex, nofollow`.
 
 **Deferred:** Lighthouse and the mobile pass are worth running in Phase 10 against the dyno, not
-against `runserver` — local numbers measure the Python dev server, not the deployed site. The
-"simple search redirects to a topic" criterion cannot be exercised yet either: `match_topic` only
-returns servable topics, and all 12 seeded topics are still `DRAFT` (§9.2 gate: none are
-`human_reviewed`, and the best has 2 distinct categories against a ≥4 requirement). The code path
-is in place; it will start firing as soon as the first topic goes ACTIVE.
+against `runserver` — local numbers measure the Python dev server, not the deployed site.
+
+**"Simple search redirects to a topic" — verified.** Five seed topics were hand-promoted to ACTIVE
+(the ones with ≥3 linked products), after which `/buscar/?q=regalos de cumpleanos` 302s to
+`/regalos/regalos-de-cumpleanos/` and `?q=regalos para adolescentes` to its own topic, while
+`?q=manualidades` correctly renders results rather than redirecting — it is below the 0.90
+threshold. Note that these five still fail the §9.2 gate on the ≥4-categories rule, so the nightly
+`curate_topics` will demote them again; that is the gate working as designed, and the promotion
+snippet is in the runbook for re-running it.
 
 ### Phase 9 — Tracking
 - ~~`/go/<click_id>/` redirect view, affiliate URL builder with `ascsubtag`, `ClickEvent` writing.~~
