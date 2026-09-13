@@ -1248,15 +1248,64 @@ enough signal to tune them honestly, and `ctr_score` is 0.000 for every product 
 collects clicks. Re-run `manage.py search_report` and tune from Admin once the catalogue is in the
 thousands.
 
-### Phase 7 — Topics & curation
-- Manual Topic creation in Admin (must work before any LLM generation).
-- `decompose_topic`, `run_search_terms`, `generate_topics`, `curate_topics`, `dedupe_topics`.
-- `curate_topics` calls the Phase 6 retrieval stack directly — one ranking implementation, used
-  by both the live search path and curation, so a topic page can never disagree with search.
-- Quality gate + `is_indexable` computation.
-- **Seed 30–50 topics by hand** covering the biggest occasions/recipients.
-- **Verify:** each seeded topic has ≥12 diverse, genuinely relevant products; `is_indexable`
-  flips correctly; pinning/excluding survives a recompute.
+### Phase 7 — Topics & curation ✅ DONE (verification deferred, see below)
+
+Built: `apps/topics/services.py` (canonical text, curation, §9.2 gate),
+`apps/pipelines/pipelines/topics.py` (`curate_topics`, `decompose_topic`, `dedupe_topics`),
+`run_search_terms` in `ingest.py`, and `manage.py seed_topics`.
+
+**Deviations from the spec, and why:**
+
+1. **`generate_topics` was not built.** It proposes new topics from coverage gaps and demand, but
+   `QueryDemand` is empty until Phase 9 collects searches, so today it would have to invent topics
+   from nothing — which is exactly how a site ends up with 500 thin pages. The 12 hand-written
+   seed topics are the reference set; `generate_topics` lands once there is real demand data to
+   mine. §9.3 caps publication at 10/day regardless.
+2. **`run_search_terms` uses Product Finder with a `title` filter, not Keepa's `search` endpoint.**
+   Finder returns bare ASINs at ~11 tokens per call and hydration fills in details at 4 tokens
+   each; `search` returns full product objects at a much worse rate for ASINs that may be
+   discarded at the quality gate anyway. Measured: **3 terms → 50 new products for 31 tokens**,
+   roughly 0.6 tokens per product discovered, against ~4 for category seeding. It reuses the
+   identical quality thresholds, so topics cannot become a back door for junk.
+3. **Canonical text skips facets already named in the title.** Appending them produced
+   *"Regalos para madres para madre"* — repetition that moves the vector without adding meaning.
+   A five-character prefix match handles Spanish inflection ("madre"/"madres",
+   "cocina"/"cocinar"). Nothing is lost: the facets still apply as hard filters via `topic_slots`.
+4. **Curation calls `engine.search` with `use_cache=False`.** A cached ordering would let a topic
+   page drift behind live search, which is the exact disagreement this phase exists to prevent.
+5. **Pinned links are renumbered to the top slots** rather than keeping their old rank, so an
+   editor's choices actually lead the page.
+6. **`dedupe_topics` never merges**, per §6.6 — it records a `TopicAlias` and fires a Telegram
+   warning for an editor to confirm. It also refuses to propose demoting an indexed page in
+   favour of one that is not.
+
+**Verified live** against production:
+
+- `seed_topics --embed` created 12 topics with clean canonical text and embeddings.
+- `curate_topics` ran all 12 in one pass, **0 Keepa tokens, $0 LLM** (embeddings already existed).
+- The §9.2 gate behaves correctly on real data: `regalos-de-cumpleanos` linked **15 products
+  across 13 brands but only 2 categories**, so it correctly stayed `is_indexable = False` on the
+  ≥4-categories rule. Topics needing adult recipients (`madres`, `padres`, `abuelos`) linked
+  **0 products** — correct, because the 27-product sample is almost entirely toys.
+- **Pinning and exclusion survive a recompute**, confirmed directly: a pinned link moved from rank
+  15 to rank 1 and stayed pinned; an excluded link was dropped from the page and from
+  `linked_count` (15 → 14) while remaining in the table.
+- `decompose_topic` produced genuine catalogue keywords rather than gift phrases — *"set
+  jardinería principiantes"*, *"masajeador de cuello"*, *"joyero organizador"* — 25 terms across
+  3 topics for **$0.000661**.
+- `run_search_terms` then turned 3 of those terms into **50 new candidate products for 31 tokens**.
+
+**Verification deliberately deferred:** the "≥12 diverse, genuinely relevant products per topic"
+check cannot be judged against 27 enriched products, nearly all toys. The gate is demonstrably
+working — it is rejecting everything it should — but whether curation picks *good* products at
+scale is unanswerable until the catalogue is in the thousands. Re-run `curate_topics --force` and
+re-read the table then.
+
+**Throughput was raised to get there.** Enrichment was the bottleneck at 960 products/day against
+a hydration capacity of 7 200, and only enriched products are searchable. Now: `seed_products`
+200/hour, `enrich_products` 40 per 15 min (~3 800/day, ~$3.60/day). Steady-state Keepa use is
+roughly **71% of the 30 240 token daily budget**, leaving headroom for `refresh_products` and
+`run_search_terms`. Throttle back down once the catalogue is large enough to tune against.
 
 ### Phase 8 — Public site
 - Base layout, header with embedded simple-search component, footer, Tailwind design tokens.

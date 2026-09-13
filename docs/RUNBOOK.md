@@ -340,6 +340,71 @@ Cached searches skip the embedding entirely.
 
 ---
 
+## 5d. Topics
+
+A Topic is a landing page: a gift intent (`regalos para madres`), its facets, and a precomputed,
+ranked list of products.
+
+### Creating topics
+
+```powershell
+uv run python manage.py seed_topics --embed      # the 12 hand-written starters, idempotent
+```
+
+Everything else is Admin → *Temas*. A topic needs a `title`, a `slug`, and at least one facet
+(`occasions` / `recipients` / `interests`). Facets are **hard filters**, so adding one narrows the
+page — use the vocabulary keys from `apps/catalog/vocabularies.py`, never free text.
+
+`canonical_text` and `embedding` are computed; don't hand-edit them. A topic without an embedding
+cannot be matched by a user search.
+
+### Filling and publishing a topic
+
+```powershell
+uv run python manage.py run_pipeline curate_topics                       # stale topics only
+uv run python manage.py run_pipeline curate_topics --payload '{\"force\": true}'
+uv run python manage.py run_pipeline decompose_topic --max-items 5       # topic -> Amazon keywords
+uv run python manage.py run_pipeline run_search_terms --max-items 10     # keywords -> products
+```
+
+The loop is: **curate** → see which topics are starved → **decompose** them into keywords →
+**run the terms** to ingest matching products → wait for hydration and enrichment → **curate
+again**. That is how you fix a thin page, and it is far more targeted than seeding a whole
+category.
+
+`curate_topics` costs no Keepa tokens and no LLM money once topic embeddings exist.
+
+### Reading the quality gate
+
+`is_indexable` controls `noindex` and the sitemap. It requires **all** of: ≥12 linked products
+scoring ≥0.55, ≥4 distinct root categories, ≥3 distinct brands, a non-empty intro, a human review,
+and not being merged away. A failing topic **stays live for users** — it just isn't indexed.
+
+```powershell
+uv run python manage.py run_pipeline curate_topics --payload '{\"force\": true}'
+```
+
+then check `linked_count`, `distinct_categories`, `distinct_brands` in Admin. The usual failure is
+too few categories, which means the catalogue is too narrow, not that the topic is bad.
+
+A topic that *loses* `is_indexable` fires a Telegram warning — that is a live page leaving Google,
+and it should never pass unnoticed.
+
+### Pinning and excluding
+
+In Admin → *Productos en tema*, `is_pinned` forces a product to the top and `is_excluded` removes
+it. **Both survive every recompute** — a recompute updates the machine's opinion, never the
+editor's. Excluded products stay in the table but are dropped from the page and from
+`linked_count`.
+
+### Duplicates
+
+`dedupe_topics` flags pairs with cosine ≥0.95 and sends a Telegram warning. It **never merges on
+its own**; set `merged_into` in Admin after checking, because a wrong merge cascades into
+redirects that are painful to unwind.
+
+---
+
 ## 6. Database access
 
 No `psql` is installed. Use an ephemeral psycopg session:

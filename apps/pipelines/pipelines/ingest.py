@@ -8,6 +8,7 @@ budget actually governs.
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 from django.conf import settings
@@ -24,14 +25,18 @@ from apps.catalog.services import (
     apply_keepa_product,
     recompute_derived,
 )
+from apps.clients.exceptions import KeepaError
 from apps.clients.keepa import TOKENS_PER_ASIN_ESTIMATE, TOKENS_PER_FINDER_CALL_ESTIMATE
 from apps.pipelines.base import Pipeline, PipelineContext, PipelineResult
 from apps.pipelines.models import PipelineRun, RunStatus
 from apps.pipelines.registry import register
 from apps.search.models import RankingConfig
+from apps.topics.models import SearchTerm, SearchTermStatus
 
 #: Keepa stores ratings as integers ×10. 4.2 stars is 42.
 RATING_SCALE = 10
+
+logger = logging.getLogger(__name__)
 
 
 def _gate(ctx: PipelineContext) -> QualityGate:
@@ -185,6 +190,118 @@ class SeedProductsPipeline(Pipeline):
             return 0
         Product.objects.bulk_create(stubs, ignore_conflicts=True, batch_size=500)
         return len(stubs)
+
+
+@register
+class RunSearchTermsPipeline(Pipeline):
+    """Ingest products for the Amazon keywords that `decompose_topic` derived from Topics.
+
+    Category seeding fills the catalogue with whatever Amazon ranks highly; this fills it with
+    what the site actually needs in order to publish pages. A topic stuck below the §9.2 gate for
+    want of products is a page that cannot go live, and this is the lever that unsticks it.
+
+    It uses Product Finder with a title filter rather than Keepa's keyword `search` endpoint: the
+    Finder returns bare ASINs for ~11 tokens per call and hydration fetches the details later at
+    4 tokens each, whereas `search` returns full product objects at a far worse rate for ASINs we
+    may well discard at the quality gate anyway.
+    """
+
+    key = "run_search_terms"
+    description = "Busca en Amazon los términos derivados de los temas e ingiere candidatos."
+    default_cron = "30 */4 * * *"
+    default_max_per_run = 10
+    priority = 60
+    requires_keepa = True
+    estimated_keepa_tokens = TOKENS_PER_FINDER_CALL_ESTIMATE * 10
+    default_options = {
+        "min_rating": 4.2,
+        "min_reviews": 150,
+        "sales_rank_min": 150,
+        "sales_rank_max": 30000,
+        "min_price_cents": 1500,
+        "max_price_cents": 50000,
+        "per_term": 50,
+        # Terms are re-runnable, but only deliberately: Amazon's catalogue moves slowly enough
+        # that re-running weekly would mostly re-discover ASINs we already have.
+        "rerun_done": False,
+    }
+
+    def select(self, ctx: PipelineContext):
+        statuses = [SearchTermStatus.PENDING]
+        if ctx.option("rerun_done", False):
+            statuses.append(SearchTermStatus.DONE)
+        return (
+            SearchTerm.objects.filter(status__in=statuses)
+            .select_related("topic")
+            .order_by("-priority", "-topic__priority", "id")
+        )
+
+    def run(self, ctx: PipelineContext) -> PipelineResult:
+        terms = list(self.select(ctx)[: ctx.max_items])
+        result = PipelineResult(items_in=len(terms))
+        if not terms:
+            return result
+
+        per_term = int(ctx.option("per_term", 50))
+
+        with ctx.step("search_terms", terms=len(terms)) as step:
+            discovered = 0
+            for term in terms:
+                try:
+                    asins, total = ctx.keepa.find_products(self._selection(ctx, term, per_term))
+                except KeepaError as exc:
+                    term.status = SearchTermStatus.FAILED
+                    term.save(update_fields=["status"])
+                    result.items_failed += 1
+                    logger.warning("Término %r falló: %s", term.text, exc)
+                    continue
+
+                created = SeedProductsPipeline._store(asins)
+                discovered += created
+
+                term.status = SearchTermStatus.DONE
+                term.run_count += 1
+                term.products_found += created
+                term.keepa_tokens += TOKENS_PER_FINDER_CALL_ESTIMATE
+                term.last_run_at = timezone.now()
+                term.save(
+                    update_fields=[
+                        "status",
+                        "run_count",
+                        "products_found",
+                        "keepa_tokens",
+                        "last_run_at",
+                    ]
+                )
+                result.items_updated += 1
+
+            step.context.update(discovered=discovered)
+
+        result.items_created = discovered
+        return result
+
+    def _selection(self, ctx: PipelineContext, term: SearchTerm, per_term: int) -> dict:
+        """Same quality bar as category seeding, narrowed by title.
+
+        Reusing the thresholds matters: a product found through a topic keyword must clear exactly
+        the same standards as one found by browsing a category, or topics become a back door for
+        the junk the gate exists to keep out.
+        """
+        return {
+            "productType": [0],
+            "title": term.normalized,
+            "rootCategory": list(categories.GIFT_SUITABLE_IDS),
+            "current_RATING_gte": int(float(ctx.option("min_rating", 4.2)) * RATING_SCALE),
+            "current_COUNT_REVIEWS_gte": int(ctx.option("min_reviews", 150)),
+            "current_SALES_gte": int(ctx.option("sales_rank_min", 150)),
+            "current_SALES_lte": int(ctx.option("sales_rank_max", 30000)),
+            "current_NEW_gte": int(ctx.option("min_price_cents", 1500)),
+            "current_NEW_lte": int(ctx.option("max_price_cents", 50000)),
+            "isAdultProduct": False,
+            "sort": [["current_SALES", "asc"]],
+            "perPage": per_term,
+            "page": 0,
+        }
 
 
 class _HydrationPipeline(Pipeline):
