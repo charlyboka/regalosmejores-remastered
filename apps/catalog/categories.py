@@ -10,6 +10,10 @@ changes slowly and we do not want to spend a token on it every run. Refresh with
 
 ``gift_suitable`` is the seeding allowlist. Everything outside it is still recorded when we
 encounter it — we just never harvest from it and never enrich it.
+
+``search_only`` is a second, narrower tier: categories we accept and enrich when a topic keyword
+finds something there, but never browse in bulk. It exists for categories that contain real gifts
+buried in enormous amounts of noise, where a targeted query is the only sane way in.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ class RootCategory(NamedTuple):
     name: str
     product_count: int
     gift_suitable: bool
+    search_only: bool = False
 
 
 ROOT_CATEGORIES: tuple[RootCategory, ...] = (
@@ -41,9 +46,10 @@ ROOT_CATEGORIES: tuple[RootCategory, ...] = (
     RootCategory(3564289031, "Iluminación", 2_528_589, True),
     RootCategory(1703495031, "Bebé", 2_301_905, True),
     RootCategory(599382031, "Videojuegos", 456_526, True),
+    # --- reachable only through topic keywords, never browsed in bulk ------------------
+    RootCategory(5512276031, "Moda", 51_921_624, False, True),
     # --- out of scope, kept for the rank denominator and for explicit exclusion ---------
     RootCategory(599364031, "Libros", 65_598_210, False),
-    RootCategory(5512276031, "Moda", 51_921_624, False),
     RootCategory(5866088031, "Industria, empresas y ciencia", 11_730_985, False),
     RootCategory(1748200031, "Música digital", 6_733_102, False),
     RootCategory(3677430031, "Salud y cuidado personal", 4_174_627, False),
@@ -68,6 +74,12 @@ ROOT_CATEGORIES: tuple[RootCategory, ...] = (
 BY_ID: dict[int, RootCategory] = {c.cat_id: c for c in ROOT_CATEGORIES}
 
 GIFT_SUITABLE_IDS: tuple[int, ...] = tuple(c.cat_id for c in ROOT_CATEGORIES if c.gift_suitable)
+
+#: Accepted on arrival but never harvested from. See ``search_only`` above.
+SEARCH_ONLY_IDS: tuple[int, ...] = tuple(c.cat_id for c in ROOT_CATEGORIES if c.search_only)
+
+#: Every category a product may legitimately come from, whichever door it used.
+INGESTABLE_IDS: tuple[int, ...] = GIFT_SUITABLE_IDS + SEARCH_ONLY_IDS
 
 #: Fallback denominator when a product's root category is unknown to us.
 DEFAULT_PRODUCT_COUNT = 1_000_000
@@ -154,5 +166,12 @@ def product_count_for(cat_id: int | None) -> int:
 
 
 def is_gift_suitable(cat_id: int | None) -> bool:
+    """May we *harvest* from this category?"""
     category = BY_ID.get(cat_id or 0)
     return bool(category and category.gift_suitable)
+
+
+def is_ingestable(cat_id: int | None) -> bool:
+    """May we *keep* a product from this category, however we found it?"""
+    category = BY_ID.get(cat_id or 0)
+    return bool(category and (category.gift_suitable or category.search_only))

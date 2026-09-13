@@ -41,7 +41,7 @@ class QualityGate:
         """Return an empty string when the product passes, or a Spanish reason when it does not."""
         if product.is_adult:
             return "Producto para adultos"
-        if not categories.is_gift_suitable(product.root_category_id):
+        if not categories.is_ingestable(product.root_category_id):
             name = categories.name_for(product.root_category_id) or product.root_category_id
             return f"Categoría fuera de alcance: {name}"
         if (product.product_group or "").strip().lower() in categories.BLOCKED_PRODUCT_GROUPS:

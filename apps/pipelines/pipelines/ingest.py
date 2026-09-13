@@ -286,11 +286,15 @@ class RunSearchTermsPipeline(Pipeline):
         Reusing the thresholds matters: a product found through a topic keyword must clear exactly
         the same standards as one found by browsing a category, or topics become a back door for
         the junk the gate exists to keep out.
+
+        The one thing that *is* wider here is the category list: this path may also reach
+        ``SEARCH_ONLY_IDS``. A keyword like "jersey navideño" is specific enough to land on a
+        real gift; browsing all of Moda is not.
         """
         return {
             "productType": [0],
             "title": term.normalized,
-            "rootCategory": list(categories.GIFT_SUITABLE_IDS),
+            "rootCategory": list(categories.INGESTABLE_IDS),
             "current_RATING_gte": int(float(ctx.option("min_rating", 4.2)) * RATING_SCALE),
             "current_COUNT_REVIEWS_gte": int(ctx.option("min_reviews", 150)),
             "current_SALES_gte": int(ctx.option("sales_rank_min", 150)),

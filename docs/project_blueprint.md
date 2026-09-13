@@ -1115,6 +1115,16 @@ reclaimed to QUEUED; `manage.py dev` started both processes and stopped both cle
 9. **Amazon first-party hardware is blocked** (`AMAZON_BOOK_READER`, `DIGITAL_DEVICE_3/4` — Kindle,
    Echo, Fire TV). It passes every quality filter, but it earns 0% Associates commission in Spain
    and has no discovery value: nobody needs this site to learn that a Kindle exists.
+10. **Categories have three tiers, not two** (added in Phase 7). `gift_suitable` is the *harvest*
+   allowlist; `search_only` is a narrower tier we accept and enrich but never browse in bulk;
+   everything else is recorded and refused. Moda is the first `search_only` category: browsing
+   51.9 M fashion listings would drown the catalogue in t-shirts, but "jersey navideño" and
+   "calcetines navideños" are real gifts and a topic keyword is specific enough to find them
+   without the noise. `is_gift_suitable` answers "may we harvest here?", `is_ingestable` answers
+   "may we keep this, however we found it?". Verified: the change added 28 apparel products that
+   the previous rules rejected outright, and the existing `variation_group_key` collapse handled
+   the size/colour explosion unaided — 12 rows resolved to 3 families, so search shows one pair
+   of socks rather than six.
 
 **Verified live** on a deliberately small sample (the intended pace is a queue, never saturation):
 two `seed_products` runs created 100 stubs for 11 Keepa tokens each; three `hydrate_products` runs
