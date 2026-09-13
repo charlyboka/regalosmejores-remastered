@@ -436,6 +436,27 @@ To see a populated home page before the gate passes naturally, promote one by ha
 the shell): set `status=ACTIVE` and `is_indexable=True`. Do this knowingly — an indexable topic
 with fewer than 12 diverse products is exactly the thin page the gate exists to prevent.
 
+**A hand-promoted topic does not stay promoted.** `curate_topics` runs nightly at 05:00 UTC and
+re-applies the gate, so anything still failing it drops back to `is_indexable = False` (and fires a
+"topic dropped out of index" Telegram warning). That is the gate working, not a bug. Re-run the
+promotion, or disable the `curate_topics` schedule in Admin while you are demoing.
+
+```powershell
+@'
+import django, os, logging
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.dev")
+django.setup()
+logging.disable(logging.CRITICAL)
+from apps.topics.models import Topic, TopicStatus
+for t in Topic.objects.filter(linked_count__gte=3):
+    t.status = TopicStatus.ACTIVE
+    t.human_reviewed = True
+    t.is_indexable = True
+    t.save(update_fields=["status", "human_reviewed", "is_indexable", "updated_at"])
+    print("ACTIVE", t.slug, t.linked_count)
+'@ | uv run python - 2>$null
+```
+
 ### Outbound links
 
 Every Amazon link on the site — image, title, and all three CTAs — goes through
@@ -486,7 +507,9 @@ for u in ["/", "/regalos/ocasiones/", "/buscar/", "/buscador-avanzado/", "/afili
 ```
 
 `ALLOWED_HOSTS` must be widened in the snippet or every request returns **400**, not 404 — the
-test client uses the host `testserver`.
+test client uses the host `testserver`. And if you want to inspect `response.context` rather than
+the HTML, call `django.test.utils.setup_test_environment()` first; without it `response.context` is
+`None`, because the signal that captures it is only connected under the test runner.
 
 ### Before launch
 
