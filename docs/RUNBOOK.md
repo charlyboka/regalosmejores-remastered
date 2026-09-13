@@ -108,9 +108,8 @@ looking at the live site.
 
 | Admin URL | Use it to |
 |---|---|
-| `/admin/pipelines/pipelinerun/` | Every run: status, duration, counters, error. **Start here when something looks wrong.** |
-| `/admin/pipelines/pipelinesteprun/` | Per-step detail inside a run |
-| `/admin/pipelines/jobqueue/` | Pending / running / failed jobs. A growing backlog means the worker is down or throttled |
+| `/admin/pipelines/pipelinerun/` | Every run: status, duration, counters, error, plus its steps inline. **Start here when something looks wrong.** |
+| `/admin/pipelines/jobqueue/` | Pending / running / failed jobs, with retry and cancel actions. A growing backlog means the worker is down or throttled |
 | `/admin/pipelines/pipelineschedule/` | Cron expressions and per-pipeline enable/disable switches |
 | `/admin/pipelines/keepatokenledger/` | Keepa token balance over time — the hard constraint on ingestion speed |
 | `/admin/pipelines/llmcall/` | LLM spend, per call and per day, against `LLM_DAILY_BUDGET_USD` |
@@ -136,6 +135,18 @@ jobs. Individual pipelines can be disabled instead via `/admin/pipelines/pipelin
 uv run python manage.py run_pipeline <key>           # available from Phase 5 onwards
 uv run python manage.py run_pipeline <key> --dry-run
 ```
+
+### Checking the external APIs
+
+```powershell
+uv run python manage.py ping_clients
+uv run python manage.py ping_clients --skip-telegram   # don't post to the channel
+```
+
+Makes one live call to Keepa, OpenAI and Telegram and prints tokens left, cost and latency. Run it
+first whenever a pipeline starts failing — it separates "our bug" from "their API". It costs about
+20 Keepa tokens and a few thousandths of a cent, and it posts a message to the channel unless you
+skip it.
 
 ---
 

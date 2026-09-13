@@ -165,6 +165,7 @@ class Topic:
     # quality gate (§9.2)
     linked_count     IntegerField(default=0)
     distinct_categories IntegerField(default=0)
+    distinct_brands  IntegerField(default=0)
     quality_score    FloatField(default=0)
     is_indexable     BooleanField(default=False)     # computed; controls robots meta + sitemap
     human_reviewed   BooleanField(default=False)
@@ -379,6 +380,18 @@ client.embed(texts: list[str], *, model=None, dimensions=512) -> list[list[float
 - Model registry: `{name: (provider, input_$/1M, output_$/1M, supports_temperature, context)}`.
   Unsupported params are silently dropped (some models reject `temperature`).
 - Default model `gpt-5.6-luna`, default embedding `text-embedding-3-small` @ 512 dims.
+
+  | Model | Input | Cached input | Output |
+  |---|---|---|---|
+  | `gpt-6-astra` | $10.00 | $1.00 | $50.00 |
+  | `gpt-5.6-sol` | $4.00 | $0.40 | $20.00 |
+  | `gpt-5.6-terra` | $2.00 | $0.20 | $12.00 |
+  | **`gpt-5.6-luna`** (default) | **$0.20** | **$0.02** | **$1.20** |
+  | `text-embedding-3-small` | $0.02 | — | — |
+
+  USD per 1M tokens, short-context tier (our prompts are one product or one topic at a time).
+  Long context is roughly 2x across the board.
+
 - Always uses **structured outputs / JSON schema** for pipeline calls — never free-text parsing.
 - Writes an `LLMCall` row per call. Enforces a daily spend cap (`LLM_DAILY_BUDGET_USD`);
   raises `LLMBudgetExhausted` past it and fires a Telegram CRITICAL.
@@ -922,20 +935,54 @@ line of each phase, run manually. Development runs locally against the productio
   `ruff check .` and `ruff format --check .` clean · `static/css/site.css` built.
 - Operational documentation: [docs/RUNBOOK.md](RUNBOOK.md).
 
-### Phase 1 — Data model
-- All models from §4, with `pgvector` `HalfVectorField`, HNSW + GIN + trigram indexes via
-  `RunSQL` in migrations.
-- Django Admin for every model: list displays, filters, search fields, read-only computed fields.
-- `RankingConfig` singleton seeded.
-- **Verify:** migrations applied to prod DB; every model visible and editable in Admin.
+### Phase 1 — Data model ✅ DONE
+- All models from §4, with `pgvector` `HalfVectorField(512)`, HNSW (`halfvec_cosine_ops`,
+  `m=16, ef_construction=64`) on `ProductFacet`, `Topic` and `TopicAlias`; GIN
+  `to_tsvector('spanish', text)` and `gin_trgm_ops` on `ProductFacet.text`; GIN on the
+  occasion/recipient/interest arrays.
+- `apps/catalog/migrations/0001_extensions.py` creates `vector`, `pg_trgm`, `unaccent` and
+  `btree_gin` (idempotent — they already existed on the Heroku DB).
+- Django Admin for all 16 models: list displays, filters, search fields, autocomplete,
+  read-only computed fields, inlines (facets under a product; aliases / search terms / links under
+  a topic; step runs under a pipeline run), and bulk actions (block/unblock products, requeue
+  enrichment, pin/exclude links, activate/archive topics, retry/cancel jobs, run schedule now).
+  Ledger models (`PipelineRun`, `ClickEvent`, `PageView`, `KeepaTokenLedger`, `LLMCall`,
+  `NotificationLog`, `UserQuery`) are read-only in Admin so history cannot be edited.
+- `RankingConfig` singleton seeded by `search/0002_seed_rankingconfig.py`.
+- Two deviations from §4, both deliberate: optional text fields (`brand`, `manufacturer`,
+  `model`, `parent_asin`, `product_group`) use `blank=True, default=""` instead of `null=True`
+  per Django convention — `NULL` is kept only where it is semantically distinct (`price_band` =
+  "not computed"). `Topic.distinct_brands` was added because the quality gate in §9.2 needs it.
+- **Verified:** migrations applied to the prod DB (31 tables, 11 MB); all HNSW/GIN indexes present
+  in `pg_indexes`; `check --tag admin` clean; all 36 Admin changelist and add URLs render.
 
-### Phase 2 — Clients
-- `KeepaClient` (product / query / search), token ledger writing, normalised dataclasses.
-- `LLMClient` (complete + embed), model registry, `LLMCall` ledger, daily budget cap.
-- `TelegramClient` + `notify()` with throttling.
-- `manage.py ping_clients` — one call to each, printing tokens left and cost.
-- **Verify:** `ping_clients` succeeds against live APIs; a Telegram message lands in the channel;
-  `KeepaTokenLedger` and `LLMCall` rows appear.
+### Phase 2 — Clients ✅ DONE
+- `KeepaClient` (`token` / `product` / `query` / `search`), writing a `KeepaTokenLedger` row on
+  every call and projecting the current balance from the newest row plus `refillRate`, so the
+  budget guard is self-calibrating. Raises `KeepaBudgetExhausted` (retryable, carries
+  `retry_after_seconds`) rather than failing, and `KeepaAuthError` on 401/403.
+- `LLMClient.complete()` / `.embed()`, model registry with real per-1M pricing, `LLMCall` ledger
+  on success *and* failure, daily cap raising `LLMBudgetExhausted` plus a Telegram CRITICAL.
+  Unsupported sampling params are detected from the API error and dropped on retry, so the
+  registry never has to encode a per-model capability matrix.
+- `TelegramClient.notify()` — throttled per key via `NotificationLog`, never raises.
+- `manage.py ping_clients [--skip-keepa|--skip-llm|--skip-telegram]`.
+
+**Keepa API facts confirmed against amazon.es (domain 9) — these differ from older docs:**
+
+| Fact | Value |
+|---|---|
+| Images | `product["images"]` is a list of objects (`{"l","m","variant"}`), **not** `imagesCSV`. MAIN variant is hoisted first. |
+| Variations | `product["variations"]` is a list of objects, **not** `variationCSV`. `parentAsin` is preferred for `variation_group_key`. |
+| Reviews | `product["reviews"]["ratingCount"]` is more reliable than `stats.current[17]`. |
+| Rating | `stats.current[16]` ÷ 10. Price: `stats.current[18]` (buy box) → `[1]` (new) → `[0]` (Amazon); `-1` means no data. |
+| Product Finder | `perPage` must be **≥ 50** — smaller values return `invalidParameter`. |
+| Token cost | `/token` free · `/query` ≈ 11 · `/product` with `stats+rating+buybox` ≈ 3.5 per ASIN. Account refills at **21/min** (not 20). |
+
+- **Verified:** `ping_clients` green on all three — Product Finder returned 50 ASINs of 4.2M,
+  hydration parsed titles/brands/ratings/images/prices, `gpt-5.6-luna` returned valid structured
+  JSON for $0.000036, embeddings returned 512 dims, a message landed in the channel, and
+  `KeepaTokenLedger` / `LLMCall` / `NotificationLog` rows were all written.
 
 ### Phase 3 — Pipeline engine
 - `Pipeline` base + registry + `JobQueue` + `scheduler` + `BudgetGuard` + `run_worker`.
