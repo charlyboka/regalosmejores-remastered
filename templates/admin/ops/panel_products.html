@@ -1,0 +1,103 @@
+{% extends "admin/ops/base.html" %}
+
+{% block panel %}
+
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Catálogo</h2>
+      <a href="{% url 'admin:catalog_product_changelist' %}" class="ops-muted">tabla completa &rsaquo;</a>
+    </div>
+    <div class="ops-stats">
+      {% for s in catalog.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+    </div>
+  </section>
+
+  <div class="ops-split">
+
+    {# ----------------------------------------------------------------- embudo #}
+    <section class="ops-section">
+      <div class="ops-head">
+        <h2>Recorrido de un producto</h2>
+        <span class="ops-muted">un salto grande entre dos filas es la etapa atascada</span>
+      </div>
+      <div class="ops-funnel">
+        {% for step in funnel.steps %}
+          <div class="ops-funnel-step">
+            <div class="ops-funnel-label">
+              <strong>{{ step.label }}</strong>
+              <span class="ops-muted">{{ step.detail }}</span>
+            </div>
+            <div class="ops-bar">
+              <div class="ops-bar-fill tone-good" style="width: {{ step.pct }}%"></div>
+            </div>
+            <div class="ops-funnel-count">{{ step.count }} <span class="ops-muted">{{ step.pct }}%</span></div>
+          </div>
+        {% endfor %}
+      </div>
+      <ul class="ops-list">
+        {% for row in catalog.by_status %}
+          <li><span>Enriquecimiento: {{ row.label }}</span><span class="ops-muted">{{ row.count }}</span></li>
+        {% endfor %}
+      </ul>
+    </section>
+
+    {# --------------------------------------------------------------- atascos #}
+    <section class="ops-section">
+      <div class="ops-head"><h2>Atascados</h2></div>
+      {% for group in stuck %}
+        <div class="ops-stuck">
+          <div class="ops-head is-tight">
+            <h3 class="tone-{{ group.tone }}">{{ group.label }}</h3>
+            <span class="ops-muted">{{ group.count }}</span>
+          </div>
+          {% if group.examples %}
+            <ul class="ops-list">
+              {% for p in group.examples %}
+                <li>
+                  <span><a href="{% url 'admin:ops_product' p.pk %}">{{ p.title|truncatechars:52 }}</a></span>
+                  <span class="ops-muted">{{ p.asin }} · {{ p.first_seen_at|timesince }} atrás</span>
+                </li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </section>
+
+  </div>
+
+  {# --------------------------------------------------------------- recientes #}
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Añadidos recientemente</h2>
+      <span class="ops-muted">los {{ recent|length }} últimos que entraron en el catálogo</span>
+    </div>
+    <div class="ops-products">
+      {% for p in recent %}
+        <a class="ops-product" href="{% url 'admin:ops_product' p.pk %}">
+          {% if p.image_urls %}
+            <img src="{{ p.image_urls.0 }}" alt="" loading="lazy" referrerpolicy="no-referrer">
+          {% else %}
+            <span class="ops-product-noimg">sin imagen</span>
+          {% endif %}
+          <span class="ops-product-body">
+            <strong>{{ p.title|truncatechars:70 }}</strong>
+            <span class="ops-muted">
+              {{ p.asin }}{% if p.brand %} · {{ p.brand }}{% endif %}
+              · {{ p.first_seen_at|timesince }} atrás
+            </span>
+            <span class="ops-product-tags">
+              <span class="ops-tag tone-{% if p.enrichment_status == 'DONE' %}good{% elif p.enrichment_status == 'FAILED' %}bad{% else %}warn{% endif %}">{{ p.get_enrichment_status_display|lower }}</span>
+              {% if not p.keepa_fetched_at %}<span class="ops-tag is-info">sin hidratar</span>{% endif %}
+              {% if p.is_blocked %}<span class="ops-tag is-bad">bloqueado</span>{% endif %}
+              {% if p.price_band %}<span class="ops-tag">{{ p.get_price_band_display|lower }}</span>{% endif %}
+            </span>
+          </span>
+        </a>
+      {% empty %}
+        <p class="ops-muted">El catálogo está vacío.</p>
+      {% endfor %}
+    </div>
+  </section>
+
+{% endblock %}

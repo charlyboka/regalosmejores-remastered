@@ -1,0 +1,72 @@
+{% extends "admin/ops/base.html" %}
+
+{% block panel %}
+
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Gasto</h2>
+      <a href="{% url 'admin:pipelines_llmcall_changelist' %}" class="ops-muted">todas las llamadas &rsaquo;</a>
+    </div>
+
+    <div class="ops-stats">
+      {% for s in cost.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+    </div>
+
+    <div class="ops-bar" title="Presupuesto diario consumido">
+      <div class="ops-bar-fill tone-{% if cost.budget_used_pct >= 100 %}bad{% elif cost.budget_used_pct >= 75 %}warn{% else %}good{% endif %}"
+           style="width: {{ cost.budget_used_pct }}%"></div>
+    </div>
+    <p class="ops-muted">
+      Hoy: {{ cost.calls_today }} llamadas · {{ cost.tokens_today }} tokens
+      {% if cost.calls_failed_today %}· <span class="tone-bad">{{ cost.calls_failed_today }} fallidas</span>{% endif %}.
+      Si la barra llega al 100 %, el guardián de presupuesto ya está aplazando trabajos.
+    </p>
+  </section>
+
+  <div class="ops-split">
+
+    <section class="ops-section">
+      <div class="ops-head">
+        <h2>Por finalidad</h2>
+        <span class="ops-muted">últimos 7 días</span>
+      </div>
+      <ul class="ops-list">
+        {% for row in cost.by_purpose %}
+          <li><span>{{ row.purpose }}</span><span class="ops-muted">{{ row.n }} llamadas · ${{ row.cost|floatformat:4 }}</span></li>
+        {% empty %}<li class="ops-muted">Sin llamadas registradas.</li>{% endfor %}
+      </ul>
+
+      <h3>Tokens de Keepa</h3>
+      <ul class="ops-list">
+        {% for row in recent_tokens %}
+          <li>
+            <span>{{ row.endpoint }}{% if row.pipeline_run %} · <a href="{% url 'admin:ops_run' row.pipeline_run.pk %}">#{{ row.pipeline_run.pk }}</a>{% endif %}</span>
+            <span class="ops-muted">−{{ row.tokens_consumed }} · quedan {{ row.tokens_left }} · {{ row.at|timesince }} atrás</span>
+          </li>
+        {% empty %}<li class="ops-muted">Sin lecturas todavía.</li>{% endfor %}
+      </ul>
+    </section>
+
+    <section class="ops-section">
+      <div class="ops-head"><h2>Llamadas recientes al LLM</h2></div>
+      <ul class="ops-list">
+        {% for call in recent_calls %}
+          <li>
+            <span>
+              {% if not call.success %}<span class="ops-tag is-bad">error</span>{% endif %}
+              {{ call.purpose }}
+              <span class="ops-muted">{{ call.model }}</span>
+              {% if call.pipeline_run %}<a href="{% url 'admin:ops_run' call.pipeline_run.pk %}" class="ops-muted">#{{ call.pipeline_run.pk }}</a>{% endif %}
+            </span>
+            <span class="ops-muted">
+              ${{ call.cost_usd|floatformat:4 }} · {{ call.total_tokens }} tok
+              {% if call.latency_ms %}· {{ call.latency_ms }} ms{% endif %} · {{ call.at|timesince }} atrás
+            </span>
+          </li>
+        {% empty %}<li class="ops-muted">Sin llamadas registradas.</li>{% endfor %}
+      </ul>
+    </section>
+
+  </div>
+
+{% endblock %}

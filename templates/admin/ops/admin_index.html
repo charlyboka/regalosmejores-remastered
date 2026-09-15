@@ -1,0 +1,25 @@
+{% extends "admin/index.html" %}
+{% load static %}
+
+{% comment %}
+The stock admin index, untouched, with one banner on top linking to the control panel.
+Extending Django's own template rather than copying it means app-list changes keep working.
+{% endcomment %}
+
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'admin/ops.css' %}">{% endblock %}
+
+{% block content %}
+  <a class="ops-banner" href="{% url 'admin:ops_panel' %}">
+    <span class="ops-banner-main">
+      <strong>Panel de control</strong>
+      <span class="ops-muted">Estado del sistema, pipelines, catálogo, temas, tráfico y coste en una sola vista.</span>
+    </span>
+    <span class="ops-banner-db tone-{{ db.tone }}" title="Espacio usado en Heroku Postgres essential-0">
+      <b>Base de datos</b>
+      <span>{{ db.summary }}</span>
+      <span class="ops-bar"><span class="ops-bar-fill tone-{{ db.tone }}" style="width: {{ db.used_pct }}%"></span></span>
+    </span>
+    <span class="ops-banner-go">Abrir &rsaquo;</span>
+  </a>
+  {{ block.super }}
+{% endblock %}

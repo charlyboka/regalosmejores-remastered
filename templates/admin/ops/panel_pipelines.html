@@ -1,0 +1,146 @@
+{% extends "admin/ops/base.html" %}
+
+{% block panel %}
+
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Estado</h2>
+      <a href="{% url 'admin:pipelines_jobqueue_changelist' %}" class="ops-muted">cola completa &rsaquo;</a>
+    </div>
+    <div class="ops-stats">
+      {% for s in worker.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+      {% for s in run_stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+    </div>
+    <div class="ops-workers">
+      {% for w in worker.workers %}
+        <div class="ops-worker {% if w.is_stale %}is-stale{% endif %}">
+          <span class="ops-dot"></span>
+          <strong>{{ w.name }}</strong>
+          <span class="ops-muted">
+            latido {{ w.at|timesince }} atrás · pid {{ w.pid|default:"—" }} · {{ w.jobs_processed }} trabajos
+            {% if w.current_job %} · ahora: {{ w.current_job.pipeline_key }}{% endif %}
+          </span>
+        </div>
+      {% empty %}
+        <p class="ops-muted">Ningún worker ha arrancado todavía.</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  {# -------------------------------------------------------------- pipelines #}
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Pipelines</h2>
+      <a href="{% url 'admin:pipelines_pipelineschedule_changelist' %}" class="ops-muted">ejecutar, pausar o reiniciar &rsaquo;</a>
+    </div>
+
+    <div class="ops-pipelines">
+      {% for row in pipelines %}
+        <article class="ops-pipeline tone-{{ row.tone }}">
+          <div class="ops-pipeline-main">
+            <div class="ops-pipeline-title">
+              <span class="ops-dot"></span>
+              <a href="{% url 'admin:pipelines_pipelineschedule_change' row.schedule.pk %}"><strong>{{ row.schedule.pipeline_key }}</strong></a>
+              <code class="ops-cron">{{ row.schedule.cron }}</code>
+              {% if not row.schedule.enabled %}<span class="ops-tag">pausado</span>{% endif %}
+              {% if row.schedule.consecutive_failures %}
+                <span class="ops-tag is-bad">{{ row.schedule.consecutive_failures }} fallos seguidos</span>
+              {% endif %}
+              {% if row.pending %}<span class="ops-tag is-info">{{ row.pending }} en cola</span>{% endif %}
+            </div>
+
+            <div class="ops-muted ops-pipeline-meta">
+              {% if row.last_run %}
+                <a href="{% url 'admin:ops_run' row.last_run.pk %}">última: {{ row.last_run.started_at|timesince }} atrás</a>
+                · {{ row.last_run.get_status_display|lower }}
+                {% if row.last_run.duration_ms %}· {{ row.last_run.duration_ms }} ms{% endif %}
+                {% if row.last_run.items_created or row.last_run.items_updated %}
+                  · {{ row.last_run.items_created }}+{{ row.last_run.items_updated }} ítems
+                {% endif %}
+              {% else %}
+                nunca ejecutado
+              {% endif %}
+              · próxima: {% if row.schedule.next_run_at %}{{ row.schedule.next_run_at|date:"d/m H:i" }}{% else %}—{% endif %}
+              · máx {{ row.schedule.max_per_run }}/vez
+            </div>
+          </div>
+        </article>
+      {% empty %}
+        <p class="ops-muted">No hay pipelines registrados.</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="ops-split">
+
+    {# ------------------------------------------------------------- la cola #}
+    <section class="ops-section">
+      <div class="ops-head"><h2>Cola de trabajos</h2></div>
+
+      <ul class="ops-list">
+        {% for row in queue.by_status %}
+          <li><span>{{ row.label }}</span><span class="ops-muted">{{ row.count }}</span></li>
+        {% empty %}<li class="ops-muted">La cola está vacía.</li>{% endfor %}
+      </ul>
+
+      {% if queue.by_pipeline %}
+        <h3>Pendiente por pipeline</h3>
+        <ul class="ops-list">
+          {% for row in queue.by_pipeline %}
+            <li><span>{{ row.pipeline_key }}</span><span class="ops-muted">{{ row.n }}</span></li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+
+      <h3>Lo siguiente que se ejecutará</h3>
+      <ul class="ops-list">
+        {% for job in queue.upcoming %}
+          <li>
+            <span>
+              <a href="{% url 'admin:pipelines_jobqueue_change' job.pk %}">{{ job.pipeline_key }}</a>
+              {% if job.attempts %}<span class="ops-tag is-bad">intento {{ job.attempts }}/{{ job.max_attempts }}</span>{% endif %}
+            </span>
+            <span class="ops-muted">prio {{ job.priority }} · {{ job.available_at|date:"d/m H:i" }}</span>
+          </li>
+        {% empty %}<li class="ops-muted">Nada en cola.</li>{% endfor %}
+      </ul>
+
+      {% if queue.failed %}
+        <h3>Fallidos</h3>
+        <ul class="ops-list">
+          {% for job in queue.failed %}
+            <li>
+              <span><a href="{% url 'admin:pipelines_jobqueue_change' job.pk %}">{{ job.pipeline_key }}</a>
+                <span class="ops-muted">{{ job.last_error|truncatechars:70 }}</span></span>
+              <span class="ops-muted">{{ job.updated_at|timesince }} atrás</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+    {# ---------------------------------------------------------- ejecuciones #}
+    <section class="ops-section">
+      <div class="ops-head">
+        <h2>Últimas ejecuciones</h2>
+        <a href="{% url 'admin:pipelines_pipelinerun_changelist' %}" class="ops-muted">todas &rsaquo;</a>
+      </div>
+      <ul class="ops-list">
+        {% for row in runs %}
+          <li>
+            <span>
+              <a href="{% url 'admin:ops_run' row.run.pk %}">{{ row.run.pipeline_key }}</a>
+              <span class="ops-tag tone-{{ row.tone }}">{{ row.run.get_status_display|lower }}</span>
+              {% if row.run.skip_reason %}<span class="ops-muted">{{ row.run.skip_reason }}</span>{% endif %}
+            </span>
+            <span class="ops-muted">
+              {% if row.run.duration_ms %}{{ row.run.duration_ms }} ms · {% endif %}{{ row.run.started_at|timesince }} atrás
+            </span>
+          </li>
+        {% empty %}<li class="ops-muted">Todavía no se ha ejecutado nada.</li>{% endfor %}
+      </ul>
+    </section>
+
+  </div>
+
+{% endblock %}

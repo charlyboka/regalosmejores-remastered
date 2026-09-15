@@ -1,0 +1,39 @@
+{% extends "web/legal/_base.html" %}
+
+{% comment %}
+Datos identificativos exigidos por la LSSI-CE (art. 10). Los marcadores [PENDIENTE] deben
+sustituirse por los datos reales del titular antes de abrir el sitio al público.
+{% endcomment %}
+
+{% block legal_content %}
+  <h2 class="pt-2 text-lg font-semibold text-slate-900">Titular del sitio</h2>
+  <ul class="list-disc space-y-1 pl-5">
+    <li>Titular: [PENDIENTE: nombre o razón social]</li>
+    <li>NIF/CIF: [PENDIENTE]</li>
+    <li>Domicilio: [PENDIENTE]</li>
+    <li>Correo de contacto: [PENDIENTE: email]</li>
+  </ul>
+
+  <h2 class="pt-4 text-lg font-semibold text-slate-900">Objeto</h2>
+  <p>
+    {{ SITE_NAME }} es un sitio de recomendación de regalos. No vendemos productos ni intervenimos
+    en la compra: todas las transacciones se realizan en Amazon.es, sujetas a sus propias
+    condiciones.
+  </p>
+
+  <h2 class="pt-4 text-lg font-semibold text-slate-900">Responsabilidad</h2>
+  <p>
+    La información sobre productos (títulos, imágenes, valoraciones y disponibilidad) procede de
+    fuentes externas y puede quedar desactualizada. No garantizamos su exactitud ni asumimos
+    responsabilidad por las compras realizadas en sitios de terceros.
+  </p>
+
+  <h2 class="pt-4 text-lg font-semibold text-slate-900">Propiedad intelectual</h2>
+  <p>
+    Los textos y la selección editorial de este sitio son propiedad de su titular. Las marcas,
+    imágenes y nombres de producto pertenecen a sus respectivos propietarios.
+  </p>
+
+  <h2 class="pt-4 text-lg font-semibold text-slate-900">Legislación aplicable</h2>
+  <p>Estas condiciones se rigen por la legislación española.</p>
+{% endblock %}

@@ -1,1 +1,24 @@
+# Secrets
 .env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Django
+staticfiles/
+media/
+*.sqlite3
+
+# Tooling
+.tools/
+.ruff_cache/
+.pytest_cache/
+
+# Editors / OS
+.DS_Store
+Thumbs.db

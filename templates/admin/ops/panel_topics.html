@@ -1,0 +1,134 @@
+{% extends "admin/ops/base.html" %}
+
+{% block panel %}
+
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Temas</h2>
+      <span>
+        <a href="{% url 'admin:topics_topic_add' %}" class="ops-cta">+ Añadir tema</a>
+        <a href="{% url 'admin:topics_topic_changelist' %}" class="ops-muted">tabla completa &rsaquo;</a>
+      </span>
+    </div>
+    <div class="ops-stats">
+      {% for s in topics.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+    </div>
+    <p class="ops-muted">
+      Un tema es una página de regalos («regalos para aniversario de bodas»). Añádelo aquí, dile
+      para quién y para qué ocasión es, y las pipelines se encargan del resto: lo descomponen en
+      búsquedas de Amazon, traen productos y los enlazan. Desde la tabla completa puedes usar la
+      acción <b>Procesar ahora</b> para no esperar al turno nocturno.
+    </p>
+    <div class="ops-chips">
+      {% for stage in board.stages %}
+        <span class="ops-chip tone-{{ stage.tone }}">{{ stage.label }}<b>{{ stage.count }}</b></span>
+      {% endfor %}
+    </div>
+  </section>
+
+  {# ------------------------------------------- la cola de temas, etapa por etapa #}
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Cola de temas</h2>
+      <span class="ops-muted">en el orden en que las pipelines los tratarán</span>
+    </div>
+    <table class="ops-table">
+      <thead>
+        <tr>
+          <th>Tema</th><th>Etapa</th><th>Qué le falta</th><th>Siguiente paso</th>
+          <th>P&nbsp;/&nbsp;C&nbsp;/&nbsp;M</th><th>Prio</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in board.rows %}
+          <tr>
+            <td>
+              <a href="{% url 'admin:topics_topic_change' row.topic.pk %}">{{ row.topic.title|truncatechars:46 }}</a>
+              <span class="ops-muted">{{ row.topic.get_status_display|default:row.topic.status }}</span>
+            </td>
+            <td class="tone-{{ row.tone }}">{{ row.stage }}</td>
+            <td>{{ row.blocking|default:"—" }}</td>
+            <td class="ops-muted">{{ row.next_step }}</td>
+            <td class="ops-muted">{{ row.topic.linked_count }} / {{ row.topic.distinct_categories }} / {{ row.topic.distinct_brands }}</td>
+            <td class="ops-muted">{{ row.topic.priority }}</td>
+            <td><a href="{% url 'admin:topics_topic_change' row.topic.pk %}">editar</a></td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="7" class="ops-muted">No hay temas todavía. Añade el primero.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <ul class="ops-list">
+      {% for row in board.by_source %}
+        <li><span>Origen: {{ row.source|lower }}</span><span class="ops-muted">{{ row.n }}</span></li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  {# ------------------------------------------------- lo que se buscará en Amazon #}
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Términos de búsqueda</h2>
+      <a href="{% url 'admin:topics_searchterm_changelist' %}" class="ops-muted">todos &rsaquo;</a>
+    </div>
+    <p class="ops-muted">
+      Las palabras clave que <code>run_search_terms</code> enviará a Keepa. Nunca se muestran al
+      visitante: salen de descomponer cada tema con el LLM.
+    </p>
+    <div class="ops-stats">
+      {% for s in terms.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+    </div>
+
+    <div class="ops-grid-4">
+      <div>
+        <h3>Próximos a ejecutarse</h3>
+        <p class="ops-muted">En este orden exacto.</p>
+        <ul class="ops-list">
+          {% for t in terms.upcoming %}
+            <li>
+              <span><a href="{% url 'admin:topics_searchterm_change' t.pk %}">{{ t.text|truncatechars:40 }}</a></span>
+              <span class="ops-muted">prio {{ t.priority }} · {{ t.topic.title|truncatechars:24 }}</span>
+            </li>
+          {% empty %}<li class="ops-muted">Ninguno pendiente.</li>{% endfor %}
+        </ul>
+      </div>
+
+      <div>
+        <h3>Ejecutados recientemente</h3>
+        <ul class="ops-list">
+          {% for t in terms.recent %}
+            <li>
+              <span>{{ t.text|truncatechars:40 }}</span>
+              <span class="ops-muted">{{ t.products_found }} productos · {{ t.keepa_tokens }} tokens · {{ t.last_run_at|timesince }} atrás</span>
+            </li>
+          {% empty %}<li class="ops-muted">Todavía no se ha ejecutado ninguno.</li>{% endfor %}
+        </ul>
+      </div>
+
+      <div>
+        <h3>Fallidos</h3>
+        <ul class="ops-list">
+          {% for t in terms.failed %}
+            <li>
+              <span class="tone-bad">{{ t.text|truncatechars:40 }}</span>
+              <span class="ops-muted">{{ t.run_count }} intentos</span>
+            </li>
+          {% empty %}<li class="ops-muted">Ninguno. Bien.</li>{% endfor %}
+        </ul>
+      </div>
+
+      <div>
+        <h3>Borradores listos para revisar</h3>
+        <ul class="ops-list">
+          {% for t in topics.needs_review %}
+            <li>
+              <span><a href="{% url 'admin:topics_topic_change' t.id %}">{{ t.title|truncatechars:34 }}</a></span>
+              <span class="ops-muted">{{ t.linked_count }}p · {{ t.distinct_categories }}c · {{ t.distinct_brands }}m</span>
+            </li>
+          {% empty %}<li class="ops-muted">Ninguno.</li>{% endfor %}
+        </ul>
+      </div>
+    </div>
+  </section>
+
+{% endblock %}

@@ -1,0 +1,91 @@
+{% load static %}<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ SITE_NAME }}{% endblock %}</title>
+  <meta name="description" content="{% block meta_description %}Ideas de regalo seleccionadas para cada ocasión, persona y afición.{% endblock %}">
+  {% block robots %}<meta name="robots" content="index, follow, max-image-preview:large">{% endblock %}
+  <link rel="canonical" href="{% block canonical %}{{ CANONICAL_URL }}{% endblock %}">
+  <link rel="alternate" hreflang="es-es" href="{{ CANONICAL_URL }}">
+  <link rel="alternate" hreflang="x-default" href="{{ CANONICAL_URL }}">
+
+  {# Product images are hotlinked from Amazon, as the Associates terms require. #}
+  <link rel="preconnect" href="{{ AMAZON_IMAGE_CDN }}" crossorigin>
+  <link rel="dns-prefetch" href="{{ AMAZON_IMAGE_CDN }}">
+
+  <meta property="og:site_name" content="{{ SITE_NAME }}">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="es_ES">
+  <meta property="og:title" content="{% block og_title %}{{ SITE_NAME }}{% endblock %}">
+  <meta property="og:description" content="{% block og_description %}Ideas de regalo seleccionadas para cada ocasión, persona y afición.{% endblock %}">
+  <meta property="og:url" content="{{ CANONICAL_URL }}">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <link rel="stylesheet" href="{% static 'css/site.css' %}">
+  <script src="{% static 'js/htmx.min.js' %}" defer></script>
+  {% block head_extra %}{% endblock %}
+</head>
+<body class="min-h-screen flex flex-col bg-white text-slate-800 antialiased">
+
+  <a href="#contenido" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded focus:bg-slate-900 focus:px-3 focus:py-2 focus:text-white">
+    Saltar al contenido
+  </a>
+
+  <header class="border-b border-slate-200">
+    <div class="mx-auto max-w-5xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+      <a href="{% url 'web:home' %}" class="shrink-0 text-lg font-semibold tracking-tight">{{ SITE_NAME }}</a>
+
+      <form action="{% url 'web:search' %}" method="get" role="search"
+            class="order-3 w-full sm:order-2 sm:w-auto sm:max-w-md sm:flex-1">
+        <label for="q-header" class="sr-only">Buscar regalos</label>
+        <div class="flex gap-2">
+          <input id="q-header" type="search" name="q" value="{{ query|default:'' }}"
+                 placeholder="¿Para quién es el regalo?" maxlength="200" autocomplete="off"
+                 class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200">
+          <button type="submit" class="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700">
+            Buscar
+          </button>
+        </div>
+      </form>
+
+      <nav class="order-2 shrink-0 sm:order-3" aria-label="Principal">
+        <a href="{% url 'web:advanced_search' %}" class="text-sm text-slate-600 underline-offset-4 hover:underline">
+          Búsqueda avanzada
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="contenido" class="flex-1">
+    <div class="mx-auto max-w-5xl px-4 py-8">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+
+  <footer class="mt-12 border-t border-slate-200">
+    <div class="mx-auto max-w-5xl space-y-3 px-4 py-6 text-sm text-slate-500">
+      <nav aria-label="Secciones" class="flex flex-wrap gap-x-4 gap-y-1">
+        <a href="{% url 'web:hub_ocasiones' %}" class="hover:underline">Ocasiones</a>
+        <a href="{% url 'web:hub_para_quien' %}" class="hover:underline">Para quién</a>
+        <a href="{% url 'web:hub_aficiones' %}" class="hover:underline">Aficiones</a>
+        <a href="{% url 'web:hub_presupuesto' %}" class="hover:underline">Presupuesto</a>
+      </nav>
+      <p>
+        En calidad de Afiliado de Amazon, {{ SITE_NAME }} obtiene ingresos por las compras
+        adscritas que cumplen los requisitos aplicables.
+      </p>
+      <nav aria-label="Legal" class="flex flex-wrap gap-x-4 gap-y-1">
+        <a href="{% url 'web:afiliados' %}" class="hover:underline">Afiliación</a>
+        <a href="{% url 'web:aviso_legal' %}" class="hover:underline">Aviso legal</a>
+        <a href="{% url 'web:privacidad' %}" class="hover:underline">Privacidad</a>
+        <a href="{% url 'web:cookies' %}" class="hover:underline">Cookies</a>
+        <a href="{% url 'web:contacto' %}" class="hover:underline">Contacto</a>
+      </nav>
+      <p>&copy; {% now "Y" %} {{ SITE_NAME }}</p>
+    </div>
+  </footer>
+
+  {% block body_extra %}{% endblock %}
+</body>
+</html>

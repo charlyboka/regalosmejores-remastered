@@ -1,0 +1,25 @@
+{% comment %}
+The live event list. Rendered inline on first load and then swapped in by the HTMX poll, so it
+must stay a fragment: no <html>, no extends.
+{% endcomment %}
+<ul class="ops-feed">
+  {% for e in events %}
+    <li class="tone-{{ e.tone }}">
+      <span class="ops-dot"></span>
+      <span class="ops-feed-body">
+        <span class="ops-feed-title">
+          {% if e.run_id %}
+            <a href="{% url 'admin:ops_run' e.run_id %}">{{ e.title }}</a>
+          {% else %}
+            {{ e.title }}
+          {% endif %}
+          {% if e.kind == "notification" %}<span class="ops-tag">telegram</span>{% endif %}
+        </span>
+        <span class="ops-muted">{{ e.detail }}</span>
+      </span>
+      <time class="ops-muted" datetime="{{ e.at|date:'c' }}">{{ e.at|timesince }}</time>
+    </li>
+  {% empty %}
+    <li class="ops-muted">Nada todavía. En cuanto el worker ejecute algo, aparecerá aquí.</li>
+  {% endfor %}
+</ul>

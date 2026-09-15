@@ -42,7 +42,7 @@ visually appealing grid of gift cards. Every card exposes several Amazon CTAs
 | Hosting | Heroku EU, app `regalosmejores`, stack `heroku-24`, dynos `web:1` + `worker:1` (Basic) |
 | CDN/DNS | Cloudflare (proxied) in front of Heroku |
 | Styling | Tailwind via the **standalone CLI binary** (no Node buildpack) |
-| Admin/dashboards | **Django Admin only** — customised ModelAdmins, list filters, admin actions |
+| Admin/dashboards | **Django Admin only** — customised ModelAdmins, list filters, admin actions, plus a read-only control panel at `/admin/panel/` (§Phase 9 deviations 1–2) |
 | Analytics | First-party `UserQuery` + `ClickEvent` tables + Google Search Console. **No GA4, no cookie banner** in v1 |
 | LLM | OpenAI `gpt-5.6-luna` (default, overridable per call) |
 | Embeddings | OpenAI `text-embedding-3-small`, `dimensions=512` |
@@ -165,6 +165,7 @@ class Topic:
     # quality gate (§9.2)
     linked_count     IntegerField(default=0)
     distinct_categories IntegerField(default=0)
+    distinct_brands  IntegerField(default=0)
     quality_score    FloatField(default=0)
     is_indexable     BooleanField(default=False)     # computed; controls robots meta + sitemap
     human_reviewed   BooleanField(default=False)
@@ -379,6 +380,18 @@ client.embed(texts: list[str], *, model=None, dimensions=512) -> list[list[float
 - Model registry: `{name: (provider, input_$/1M, output_$/1M, supports_temperature, context)}`.
   Unsupported params are silently dropped (some models reject `temperature`).
 - Default model `gpt-5.6-luna`, default embedding `text-embedding-3-small` @ 512 dims.
+
+  | Model | Input | Cached input | Output |
+  |---|---|---|---|
+  | `gpt-6-astra` | $10.00 | $1.00 | $50.00 |
+  | `gpt-5.6-sol` | $4.00 | $0.40 | $20.00 |
+  | `gpt-5.6-terra` | $2.00 | $0.20 | $12.00 |
+  | **`gpt-5.6-luna`** (default) | **$0.20** | **$0.02** | **$1.20** |
+  | `text-embedding-3-small` | $0.02 | — | — |
+
+  USD per 1M tokens, short-context tier (our prompts are one product or one topic at a time).
+  Long context is roughly 2x across the board.
+
 - Always uses **structured outputs / JSON schema** for pipeline calls — never free-text parsing.
 - Writes an `LLMCall` row per call. Enforces a daily spend cap (`LLM_DAILY_BUDGET_USD`);
   raises `LLMBudgetExhausted` past it and fires a Telegram CRITICAL.
@@ -551,7 +564,7 @@ apps/pipelines/
 |---|---|---|---|---|
 | `seed_products` | **Product Finder** harvest: structured filters → bulk candidate ASINs | `0 */6 * * *` | yes | no |
 | `hydrate_products` | Fetch full Keepa data for ASINs with no/stale `keepa_fetched_at`, batched ×100 | `*/5 * * * *` | **yes (main consumer)** | no |
-| `enrich_products` | Generate `ProductFacet` synthetic queries + tags, then embed | `*/10 * * * *` | no | yes |
+| `enrich_products` | Generate `ProductFacet` synthetic queries + tags, then embed | `*/15 * * * *` | no | yes |
 | `generate_topics` | Propose new Topics: gaps vs existing coverage + seasonal calendar | `0 3 * * *` | no | yes |
 | `mine_query_demand` | Roll `UserQuery` → `QueryDemand`; promote high-demand unmatched queries to Topic candidates | `30 2 * * *` | no | no |
 | `decompose_topic` | Topic → Amazon `SearchTerm`s | on demand / `0 4 * * *` | no | yes |
@@ -559,6 +572,8 @@ apps/pipelines/
 | `curate_topics` | Recompute `ProductTopicLink` + quality gate + `is_indexable` | `0 5 * * *` | no | no |
 | `dedupe_topics` | Flag near-duplicate topics for merge | `0 6 * * 1` | no | no |
 | `refresh_products` | Re-fetch products older than 30 days; deactivate dead ASINs | `0 */2 * * *` | yes | no |
+| `recompute_derived` | Re-derive bands / `sales_rank_pct` / `quality_score` and re-apply the quality gate | `20 1 * * *` | no | no |
+| `prune_catalog` | Delete products that will never earn their storage back (§7.5) | `0 2 * * 0` | no | no |
 | `recompute_ctr` | Rebuild `ctr_score` from `ClickEvent` | `0 1 * * *` | no | no |
 | `daily_digest` | Telegram summary | `0 6 * * *` | no | no |
 
@@ -602,6 +617,39 @@ ASINs for roughly the cost of one keyword search. Strategy: **harvest in bulk, h
 The same filters are re-applied as a hard gate at `curate_topics` time, so raising standards later
 cleans the site retroactively.
 
+### 7.5 Retention — what leaves the catalogue, and why
+
+The catalogue must not grow forever. Counter-intuitively **the binding constraint is disk, not
+Keepa tokens**, and that shapes the whole policy:
+
+- **Refreshing is cheap.** A 20k catalogue refreshed every 90 days is 222 products/day × 4 tokens
+  = ~900 tokens/day, about 3 % of the 30 240 that refill daily. Even a 30-day cycle is only ~9 %.
+  There is no token argument for refreshing less often; the cadence should be set by how fast
+  Amazon prices and ranks actually drift, not by budget.
+- **Storing is expensive.** An enriched product costs ~20 KB — mostly its 8 facet vectors and
+  their HNSW index entries (§14 Phase 5 capacity note). That is what fills a 1 GB plan at
+  ~20–25k products.
+
+So the lever is eviction, not throttling. `prune_catalog` runs weekly and **deletes** (not
+deactivates) products that will never earn their storage back:
+
+1. `is_active = False` for > 60 days — Keepa has not returned the ASIN in two months; it is gone.
+2. `SKIPPED` by the quality gate for > 90 days — it failed the standards and nothing has changed.
+3. `FAILED` enrichment for > 90 days — the model could not describe it twice; a human has not
+   intervened.
+4. `DONE` but zero clicks **and** zero impressions for > 180 days, *and* below the median
+   `quality_score` — it occupies index space and has never once been useful.
+
+Rules 1–3 are safe to automate. **Rule 4 is not**: it needs the impression data from Phase 8, and
+a product with no impressions may simply never have been *shown* rather than never wanted. It
+stays behind a `dry_run` option that reports what it would delete, until we have enough traffic to
+trust it.
+
+Deletion cascades to `ProductFacet`, which is where the space actually is. It is blocked by
+`ClickEvent`'s `PROTECT`, which is the desired behaviour: **a product anybody ever clicked is never
+deleted**, because that would destroy the click history the CTR score is built from. `prune_catalog`
+therefore excludes anything with clicks and reports the count it skipped for that reason.
+
 ---
 
 ## 8. Public site & SEO
@@ -618,6 +666,7 @@ cleans the site retroactively.
 | `/buscador-avanzado/resultados/` | Advanced results (POST/session) | `noindex, nofollow` |
 | `/go/<click_id>/` | Affiliate redirect | blocked in `robots.txt` |
 | `/aviso-legal/` `/privacidad/` `/cookies/` `/afiliados/` `/contacto/` | Legal | `noindex` except `/afiliados/` |
+| `/healthz/` | Deploy health check, no DB access | blocked in `robots.txt` |
 | `/sitemap.xml`, `/robots.txt` | Generated | — |
 
 **Answering the AI-detection concern directly:** the risk is *indexing an unbounded long tail of
@@ -707,25 +756,17 @@ App `regalosmejores` (EU, `heroku-24`), `web:1`, Postgres `essential-0` (PG 18.3
 DB emptied and ready), Telegram bot configured, no Redis,
 no custom domain attached, pipeline `regalosmejores - production`.
 
-### Stage 0 — Foundation (do during implementation)
-1. `heroku config:set` the missing vars (§11).
-2. Add `worker` dyno type via `Procfile`; scale `heroku ps:scale web=1:basic worker=1:basic`.
+### Stage 0 — Foundation (at first deploy, not during local development)
+1. `heroku config:set` the missing vars — exact command in §13.A.
+2. Add the `worker` dyno type via `Procfile`; `heroku ps:scale web=1:basic worker=1:basic`.
 3. `release: python manage.py migrate --noinput` in the `Procfile`.
-4. Rewrite [.github/workflows/heroku-deploy.yml](.github/workflows/heroku-deploy.yml) — it is
-   currently from a different project (runs `alembic`, `mypy src`, `pytest`). New job:
-   `uv sync --locked` → `ruff check .` → `python manage.py check --deploy` → deploy.
-   **No tests.**
-5. Sentry (free tier) + Heroku Papertrail (free tier) for logs.
+4. GitHub Actions workflow — already rewritten for Django + uv, lint + `check --deploy` + deploy
+   with health check and automatic rollback. **No tests.**
+5. Optional: Sentry (free tier) + Heroku Papertrail (free tier) for logs.
 
 ### Stage 1 — Go live
-6. `heroku domains:add regalosmejores.com` and `www.regalosmejores.com` → note the DNS targets.
-7. Point Namecheap nameservers at **Cloudflare**, then in Cloudflare create `CNAME` records to the
-   Heroku DNS targets, **proxied**, SSL mode **Full (strict)**.
-8. Cloudflare: Cache Rule — cache `/`, `/regalos/*`, `/buscador-avanzado` HTML with
-   `Edge TTL 1h, Browser TTL 5m`; **bypass** cache for `/go/*`, `/admin/*`, `/buscar*`.
-   Enable Brotli, Early Hints, Auto Minify off (Tailwind is already minified).
-9. Verify in Google Search Console (DNS TXT via Cloudflare), submit sitemap.
-10. `heroku redirect` www→apex (or the reverse) — pick one canonical host and 301 the other.
+Full step-by-step (domain, Cloudflare, Search Console) is in **§13.B**. Canonical host is
+`www.regalosmejores.com`; the apex 301-redirects to it at the Cloudflare layer.
 
 ### Stage 2 — Growth triggers (act when the metric is hit, not before)
 | Trigger | Action |
@@ -750,6 +791,10 @@ no custom domain attached, pipeline `regalosmejores - production`.
 ## 11. Configuration
 
 ### Environment variables
+
+Vars marked **set me** on Heroku are intentionally deferred — see §13.A for the single
+`heroku config:set` command. Vars marked **add** in `.env` are needed for local development and
+are created in Phase 0.
 
 | Var | Local `.env` | Heroku | Notes |
 |---|---|---|---|
@@ -778,9 +823,11 @@ no custom domain attached, pipeline `regalosmejores - production`.
 
 ### Repository layout
 ```
-manage.py  Procfile  .python-version  pyproject.toml  uv.lock  tailwind.config.js
+manage.py  Procfile  .python-version  pyproject.toml  uv.lock  .env.example  .gitignore
+.github/workflows/heroku-deploy.yml
+scripts/    build_css.ps1  build_css.sh          # Tailwind v4 standalone CLI (no Node)
 config/
-  settings/{base,dev,prod}.py   urls.py   wsgi.py
+  settings/{base,dev,prod,ci}.py   urls.py   wsgi.py
 apps/
   clients/    keepa.py  llm.py  telegram.py  exceptions.py
   catalog/    models  admin  services/{ingest,enrich,scoring}.py
@@ -788,10 +835,14 @@ apps/
   search/     models  admin  services/{normalize,retrieval,ranking,diversity}.py  views.py
   pipelines/  base  registry  queue  scheduler  budget  worker  models  admin  pipelines/*.py
   tracking/   models  admin  views.py (go redirect)  middleware.py
-  web/        views  templatetags  templates/  components/
+  web/        views  urls  context_processors  templatetags
   seo/        sitemaps.py  robots.py  schema.py
-static/  templates/
-docs/project_blueprint.md
+static/
+  src/input.css            # Tailwind source (v4 CSS-first config, no tailwind.config.js)
+  css/site.css             # compiled, COMMITTED to git, CI fails if stale
+  js/htmx.min.js           # self-hosted, no CDN
+templates/   base.html  web/  components/
+docs/        project_blueprint.md  RUNBOOK.md
 ```
 
 ---
@@ -813,37 +864,162 @@ affiliate revenue per session. Add a second affiliate network (Awin) before addi
 
 ---
 
-## 13. Implementation plan
+## 13. Manual actions (owner — not code)
 
-Each phase is independently shippable and verifiable in production. No unit tests — validation is
-the "Verify" line of each phase, run manually against the live app/DB.
+Everything below is deliberately **outside** the implementation phases. Development happens
+locally against the production Heroku Postgres; nothing here blocks Phases 0–9.
 
-### Phase 0 — Project skeleton
-- `uv init`, `pyproject.toml`, `.python-version` (3.12), Django 5 project `config`, empty apps.
-- `config/settings/{base,dev,prod}.py`, `django-environ`, `dj-database-url`, `whitenoise`,
-  `gunicorn`, `psycopg[binary]`, `pgvector`, `httpx`, `python-slugify`, `ruff`.
-- `Procfile` (`release`, `web`, `worker`), Tailwind standalone CLI wired into a build script.
-- Rewrite the GitHub Actions workflow (lint + `check --deploy` + deploy, no tests).
-- Set all missing Heroku config vars.
-- **Verify:** `manage.py check --deploy` clean locally; deploy succeeds; `/admin/` reachable on the
-  herokuapp URL.
+### Already resolved
+Telegram bot is an admin of channel `-1002682055833` ✅ · GitHub secrets `HEROKU_API_KEY`,
+`HEROKU_APP_NAME`, `HEROKU_EMAIL` exist ✅ · AWS key rotated ✅ · stale blueprint copies deleted ✅.
 
-### Phase 1 — Data model
-- All models from §4, with `pgvector` `HalfVectorField`, HNSW + GIN + trigram indexes via
-  `RunSQL` in migrations.
-- Django Admin for every model: list displays, filters, search fields, read-only computed fields.
-- `RankingConfig` singleton seeded.
-- **Verify:** migrations applied to prod DB; every model visible and editable in Admin.
+### A. Before the first Heroku deploy (end of Phase 0 / whenever we choose to deploy)
 
-### Phase 2 — Clients
-- `KeepaClient` (product / query / search), token ledger writing, normalised dataclasses.
-- `LLMClient` (complete + embed), model registry, `LLMCall` ledger, daily budget cap.
-- `TelegramClient` + `notify()` with throttling.
-- `manage.py ping_clients` — one call to each, printing tokens left and cost.
-- **Verify:** `ping_clients` succeeds against live APIs; a Telegram message lands in the channel;
-  `KeepaTokenLedger` and `LLMCall` rows appear.
+Run once — copy-paste ready:
 
-### Phase 3 — Pipeline engine
+```bash
+heroku config:set -a regalosmejores \
+  DJANGO_SECRET_KEY="<generate 50 random chars>" \
+  DJANGO_DEBUG=false \
+  DJANGO_ALLOWED_HOSTS="regalosmejores.com,www.regalosmejores.com,.herokuapp.com" \
+  SITE_URL="https://www.regalosmejores.com" \
+  OPENAI_API_KEY="<from .env>" \
+  OPENAI_DEFAULT_MODEL="gpt-5.6-luna" \
+  OPENAI_EMBEDDING_MODEL="text-embedding-3-small" \
+  OPENAI_EMBEDDING_DIMENSIONS=512 \
+  KEEPA_API_KEY="<from .env>" \
+  KEEPA_DOMAIN_ID=9 \
+  KEEPA_TOKEN_RESERVE=20 \
+  AMAZON_MARKETPLACE_HOST="www.amazon.es" \
+  LLM_DAILY_BUDGET_USD=5 \
+  MAX_HYDRATION_BACKLOG=5000 \
+  PIPELINES_ENABLED=true \
+  SESSION_SALT="<generate 32 random chars>"
+
+heroku config:unset -a regalosmejores DEBUG      # replaced by DJANGO_DEBUG
+heroku ps:scale -a regalosmejores web=1:basic worker=1:basic
+```
+
+Then confirm the Heroku Python buildpack picked up `uv.lock`
+(`heroku logs --tail` during build should mention `uv`). If it does not, commit a fallback:
+`uv export --no-dev --format requirements-txt > requirements.txt`.
+
+### B. At go-live (Phase 10)
+
+**Canonical host: `www.regalosmejores.com`.** Google treats www and apex as equivalent for
+ranking, so this is chosen on operational grounds: Heroku's SSL/DNS targets are `CNAME`-based and
+apex `CNAME` is non-standard, and a `www` host keeps cookies off the apex domain (useful if a
+subdomain is ever added). The apex 301-redirects to `www`.
+
+1. `heroku domains:add www.regalosmejores.com -a regalosmejores`
+   `heroku domains:add regalosmejores.com -a regalosmejores`
+   → note the two DNS targets Heroku prints.
+2. Create a Cloudflare account, add `regalosmejores.com`, and change the nameservers at Namecheap
+   to the two Cloudflare NS records. Propagation is usually under an hour.
+3. In Cloudflare DNS: `CNAME www → <heroku www target>` (proxied) and
+   `CNAME @ → <heroku apex target>` (proxied, CNAME flattening handles apex).
+4. SSL/TLS mode **Full (strict)**. Enable Always Use HTTPS, Brotli, Early Hints.
+5. Cache Rules — cache `/`, `/regalos/*`, `/buscador-avanzado`: Edge TTL 1h, Browser TTL 5m.
+   Bypass cache on `/go/*`, `/admin/*`, `/buscar*`, `/healthz*`.
+6. Redirect Rule: `regalosmejores.com/*` → `https://www.regalosmejores.com/$1`, 301.
+7. Google Search Console: add the **domain property**, verify via Cloudflare DNS TXT, submit
+   `https://www.regalosmejores.com/sitemap.xml`.
+8. Update `SITE_URL` and `DJANGO_ALLOWED_HOSTS` if anything above changed.
+
+### C. Optional / later
+Sentry project + `SENTRY_DSN` · Heroku Papertrail add-on (free tier) · Amazon Associates dashboard
+check that `ascsubtag` values are appearing in reports · Awin ES application.
+
+---
+
+## 14. Implementation plan
+
+Each phase is independently shippable and verifiable. No unit tests — validation is the **Verify**
+line of each phase, run manually. Development runs locally against the production Heroku Postgres
+(`DATABASE_URL` in `.env`); deployment to Heroku is deferred until we choose to do it.
+
+### Phase 0 — Project skeleton ✅ DONE
+- `pyproject.toml`, `.python-version` (3.12), Django 5.2 project `config`, empty apps
+  (`clients`, `catalog`, `topics`, `search`, `pipelines`, `tracking`, `web`, `seo`).
+- Dependencies: `django`, `psycopg[binary]`, `pgvector`, `django-environ`, `gunicorn`,
+  `whitenoise`, `httpx`, `openai`, `python-slugify`, `croniter`; dev: `ruff`.
+  (`dj-database-url` dropped — `django-environ`'s `env.db()` already parses `DATABASE_URL`.)
+- `config/settings/{base,dev,prod,ci}.py`. `dev` and `prod` both read `DATABASE_URL`; **local dev
+  points at the production Heroku Postgres** (accepted decision). `ci` inherits `prod` (so
+  `check --deploy` is meaningful) with a dummy DB URL and never connects.
+- `Procfile`:
+  ```
+  release: python manage.py migrate --noinput
+  web: gunicorn config.wsgi --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile -
+  worker: python manage.py run_worker
+  ```
+  `run_worker` does not exist until Phase 5 — do not scale the worker dyno before then.
+- Tailwind **v4** standalone CLI pinned to `v4.3.3`: `static/src/input.css` → `static/css/site.css`
+  (**committed**, since there is no Node buildpack). v4 is CSS-first, so there is no
+  `tailwind.config.js`; template paths are declared with `@source` inside `input.css`.
+  `scripts/build_css.ps1` + `scripts/build_css.sh` download and run the pinned binary into
+  `.tools/` (gitignored). The same version is pinned as `TAILWIND_VERSION` in the CI workflow.
+- htmx 2.0.8 self-hosted at `static/js/htmx.min.js` (no CDN, no third-party request).
+- `/healthz/` view returning `200 {"status":"ok"}` without touching the DB (used by the deploy
+  health check) and exempt from `SECURE_SSL_REDIRECT`.
+- GitHub Actions workflow rewritten for this stack — see
+  [.github/workflows/heroku-deploy.yml](.github/workflows/heroku-deploy.yml).
+- **No Heroku work in this phase.** Config vars and dyno scaling happen at deploy time (§13.A).
+- **Verified:** `check` and `check --deploy` clean · `migrate` applied Django's own tables to the
+  prod DB · `runserver` served `/healthz/` (`{"status": "ok"}`), `/` and `/admin/login/` with 200 ·
+  `ruff check .` and `ruff format --check .` clean · `static/css/site.css` built.
+- Operational documentation: [docs/RUNBOOK.md](RUNBOOK.md).
+
+### Phase 1 — Data model ✅ DONE
+- All models from §4, with `pgvector` `HalfVectorField(512)`, HNSW (`halfvec_cosine_ops`,
+  `m=16, ef_construction=64`) on `ProductFacet`, `Topic` and `TopicAlias`; GIN
+  `to_tsvector('spanish', text)` and `gin_trgm_ops` on `ProductFacet.text`; GIN on the
+  occasion/recipient/interest arrays.
+- `apps/catalog/migrations/0001_extensions.py` creates `vector`, `pg_trgm`, `unaccent` and
+  `btree_gin` (idempotent — they already existed on the Heroku DB).
+- Django Admin for all 16 models: list displays, filters, search fields, autocomplete,
+  read-only computed fields, inlines (facets under a product; aliases / search terms / links under
+  a topic; step runs under a pipeline run), and bulk actions (block/unblock products, requeue
+  enrichment, pin/exclude links, activate/archive topics, retry/cancel jobs, run schedule now).
+  Ledger models (`PipelineRun`, `ClickEvent`, `PageView`, `KeepaTokenLedger`, `LLMCall`,
+  `NotificationLog`, `UserQuery`) are read-only in Admin so history cannot be edited.
+- `RankingConfig` singleton seeded by `search/0002_seed_rankingconfig.py`.
+- Two deviations from §4, both deliberate: optional text fields (`brand`, `manufacturer`,
+  `model`, `parent_asin`, `product_group`) use `blank=True, default=""` instead of `null=True`
+  per Django convention — `NULL` is kept only where it is semantically distinct (`price_band` =
+  "not computed"). `Topic.distinct_brands` was added because the quality gate in §9.2 needs it.
+- **Verified:** migrations applied to the prod DB (31 tables, 11 MB); all HNSW/GIN indexes present
+  in `pg_indexes`; `check --tag admin` clean; all 36 Admin changelist and add URLs render.
+
+### Phase 2 — Clients ✅ DONE
+- `KeepaClient` (`token` / `product` / `query` / `search`), writing a `KeepaTokenLedger` row on
+  every call and projecting the current balance from the newest row plus `refillRate`, so the
+  budget guard is self-calibrating. Raises `KeepaBudgetExhausted` (retryable, carries
+  `retry_after_seconds`) rather than failing, and `KeepaAuthError` on 401/403.
+- `LLMClient.complete()` / `.embed()`, model registry with real per-1M pricing, `LLMCall` ledger
+  on success *and* failure, daily cap raising `LLMBudgetExhausted` plus a Telegram CRITICAL.
+  Unsupported sampling params are detected from the API error and dropped on retry, so the
+  registry never has to encode a per-model capability matrix.
+- `TelegramClient.notify()` — throttled per key via `NotificationLog`, never raises.
+- `manage.py ping_clients [--skip-keepa|--skip-llm|--skip-telegram]`.
+
+**Keepa API facts confirmed against amazon.es (domain 9) — these differ from older docs:**
+
+| Fact | Value |
+|---|---|
+| Images | `product["images"]` is a list of objects (`{"l","m","variant"}`), **not** `imagesCSV`. MAIN variant is hoisted first. |
+| Variations | `product["variations"]` is a list of objects, **not** `variationCSV`. `parentAsin` is preferred for `variation_group_key`. |
+| Reviews | `product["reviews"]["ratingCount"]` is more reliable than `stats.current[17]`. |
+| Rating | `stats.current[16]` ÷ 10. Price: `stats.current[18]` (buy box) → `[1]` (new) → `[0]` (Amazon); `-1` means no data. |
+| Product Finder | `perPage` must be **≥ 50** — smaller values return `invalidParameter`. |
+| Token cost | `/token` free · `/query` ≈ 11 · `/product` with `stats+rating+buybox` ≈ 3.5 per ASIN. Account refills at **21/min** (not 20). |
+
+- **Verified:** `ping_clients` green on all three — Product Finder returned 50 ASINs of 4.2M,
+  hydration parsed titles/brands/ratings/images/prices, `gpt-5.6-luna` returned valid structured
+  JSON for $0.000036, embeddings returned 512 dims, a message landed in the channel, and
+  `KeepaTokenLedger` / `LLMCall` / `NotificationLog` rows were all written.
+
+### Phase 3 — Pipeline engine ✅ DONE
 - `Pipeline` base + registry + `JobQueue` + `scheduler` + `BudgetGuard` + `run_worker`.
 - Admin: queue view with retry/cancel actions, run history with duration/cost columns,
   schedule editor, global kill switch.
@@ -851,7 +1027,42 @@ the "Verify" line of each phase, run manually against the live app/DB.
 - **Verify:** a no-op demo pipeline scheduled every minute produces `PipelineRun` rows; killing the
   worker mid-job leaves the job reclaimable; `BudgetGuard` visibly defers when the reserve is faked.
 
-### Phase 4 — Ingestion (get products into the DB)
+**Delivered.** `apps/pipelines/`: `base.py` (`Pipeline` ABC, `PipelineContext` with lazy
+`keepa`/`llm` clients and a `step()` context manager, `PipelineResult`), `registry.py`
+(`@register` + `pkgutil` auto-discovery of `apps.pipelines.pipelines.*`), `queue.py`
+(`enqueue`/`claim_next`/`complete`/`defer`/`fail`/`release_stale_jobs`), `scheduler.py`
+(`sync_schedules`, `tick`), `budget.py` (`BudgetGuard` with four gates), `worker.py`
+(`execute()` + `Worker` loop). Commands: `run_worker [--once --sleep --name]`,
+`run_pipeline <key> [--list --payload --max-items --ignore-budget]`, and `dev` (in `apps.web`)
+which runs the web server and the worker together for local development.
+
+**Deviations and additions beyond §4.5 / §7.1:**
+- **`WorkerHeartbeat` model added** (migration `pipelines/0002`). Without it there is no way to
+  answer "is the worker alive?" — a silent worker and an empty queue look identical in Admin.
+  Keyed by `DYNO` (or hostname), so restarts reuse one row instead of accumulating dead ones.
+  `is_stale` is true after 15 minutes without a beat.
+- **`defer()` decrements `attempts`.** Deferral means conditions were wrong (no tokens, budget
+  spent, kill switch), not that the job is broken, so it must not consume a retry. Otherwise a
+  weekend of token starvation would permanently FAIL every scheduled job.
+- **The kill switch defers rather than refusing to claim.** `PIPELINES_ENABLED=false` is a
+  `BudgetGuard` gate, which means paused work is visible in Admin as DEFERRED jobs with a reason,
+  and resumes automatically when the flag flips back.
+- **Three permanent diagnostic pipelines** (`demo_noop`, `demo_fail`, `demo_budget`) instead of a
+  throwaway one, so the engine can always be verified without spending tokens or LLM budget.
+  None declares a `default_cron`; they are on-demand only.
+- **`execute()` is shared** by the worker and `run_pipeline`, so a manual run is not a second code
+  path — it produces identical run, step, token and cost records.
+- **Budget gates use real data, not estimates:** Keepa headroom is projected from the newest
+  `KeepaTokenLedger` row (Keepa's own `tokensLeft` + `refillRate`), ignoring readings older than
+  6 hours; LLM spend comes from summing today's `LLMCall` rows.
+
+**Verified live:** `run_pipeline demo_noop` → SUCCESS with two step rows; `demo_budget` → SKIPPED
+(`keepa_budget_exhausted`, "~1475 tokens available, need 10000020") and the job returned to
+DEFERRED with `attempts` back at 0; `demo_fail` → FAILED run, job requeued with 60 s backoff;
+duplicate `dedupe_key` returned `None`; a job forced to RUNNING with a 2-hour-old lock was
+reclaimed to QUEUED; `manage.py dev` started both processes and stopped both cleanly.
+
+### Phase 4 — Ingestion (get products into the DB) ✅ DONE
 - `seed_products` (Product Finder + quality filters), `hydrate_products` (batch ×100),
   `refresh_products`.
 - Keepa → `Product` mapping incl. `price_band`, `sales_rank_pct`, `variation_group_key`,
@@ -860,7 +1071,72 @@ the "Verify" line of each phase, run manually against the live app/DB.
 - **Verify:** products accumulate steadily; token ledger matches Keepa's dashboard;
   no duplicate ASINs; variation groups populated.
 
-### Phase 5 — Enrichment & embeddings
+**Delivered.** `apps/catalog/categories.py` (frozen Keepa category tree for domain 9, 36 roots,
+15 flagged gift-suitable, plus type/binding blocklists), `apps/catalog/services.py`
+(`QualityGate`, `compute_sales_rank_pct`, `compute_quality_score`, `compute_price_band`,
+`apply_keepa_product`, `recompute_derived`, `apply_gate`) and
+`apps/pipelines/pipelines/ingest.py` with four pipelines: `seed_products` (50 / 6 h),
+`hydrate_products` (25 / 5 min), `refresh_products` (25 / 2 h), `recompute_derived` (daily).
+
+**Deviations from the plan above, and why:**
+1. **`Product.price_cents` added** (migration `catalog/0003`). Internal-only — never rendered in a
+   template or feed, because Amazon Associates terms only permit displaying PA-API prices. It
+   exists to compute bands, to spread prices in the diversity pass, and to re-band without
+   re-fetching from Keepa.
+2. **Band thresholds moved to `RankingConfig`** (`price_band_economico_max_cents` = 2500,
+   `price_band_medio_max_cents` = 7500, migration `search/0003`) so they are Admin-editable
+   without a deploy. They are deliberately *absolute* euros: a shopper's wallet is absolute, so
+   "económico" must mean cheap, not "cheap for a camera". Category-relative price spread is the
+   diversity pass's job (Phase 7), not the band's.
+3. **A fourth pipeline, `recompute_derived`**, beyond the three listed. It re-applies the bands,
+   `sales_rank_pct`, `quality_score` *and the quality gate* over the whole catalogue for zero
+   Keepa tokens, which is what makes the Admin-editable thresholds meaningful — raising standards
+   cleans the site retroactively without re-fetching anything.
+4. **`sales_rank_pct` uses real per-category product counts** from the frozen category tree rather
+   than a fixed denominator, so a rank of 5 000 means something different in Hogar y cocina
+   (51 M products) than in Videojuegos (457 K).
+5. **Out-of-scope products get `enrichment_status = SKIPPED`, not `is_active = False`.**
+   `is_active` stays reserved for "Keepa no longer returns this ASIN". Both are excluded by the
+   §6.4 hard filters, but the distinction keeps the audit trail honest. `refresh_products` skips
+   `SKIPPED` rows so we never spend tokens re-fetching something we will never serve.
+6. **`sales_rank_min = 150` and `min_price_cents = 1500` added to the Finder selection**, after the
+   first sample seed returned AA batteries, Kindles and Echo Dots. The top ~100 ranks of every
+   Amazon category are consumables, not gifts. The €15 floor is also enforced in `QualityGate`, so
+   it applies at serving time and not only at harvest time.
+7. **Keepa's `productGroup` is dead** — it is `null` on every response now. The field that carries
+   the same meaning is `type` (`BATTERY`, `TOY_BUILDING_BLOCK`, `PHYSICAL_MOVIE`, …), and it is far
+   more specific than `productGroup` ever was. `KeepaClient` now maps `type` onto
+   `Product.product_group`, and also stores `binding` (`blu_ray`, `tapa_blanda`, …) as a backstop.
+   `BLOCKED_PRODUCT_GROUPS` / `BLOCKED_BINDINGS` filter media and consumables that slip through the
+   category allowlist — a Blu-ray really is filed under Electrónica.
+8. **`Keepa referralFeePercent` deliberately not stored.** It is the fee Amazon charges the *seller*,
+   not the Associates commission. Commission rate is a function of the Associates category table
+   and will be derived from `root_category_id` in Phase 7.
+9. **Amazon first-party hardware is blocked** (`AMAZON_BOOK_READER`, `DIGITAL_DEVICE_3/4` — Kindle,
+   Echo, Fire TV). It passes every quality filter, but it earns 0% Associates commission in Spain
+   and has no discovery value: nobody needs this site to learn that a Kindle exists.
+10. **Categories have three tiers, not two** (added in Phase 7). `gift_suitable` is the *harvest*
+   allowlist; `search_only` is a narrower tier we accept and enrich but never browse in bulk;
+   everything else is recorded and refused. Moda is the first `search_only` category: browsing
+   51.9 M fashion listings would drown the catalogue in t-shirts, but "jersey navideño" and
+   "calcetines navideños" are real gifts and a topic keyword is specific enough to find them
+   without the noise. `is_gift_suitable` answers "may we harvest here?", `is_ingestable` answers
+   "may we keep this, however we found it?". Verified: the change added 28 apparel products that
+   the previous rules rejected outright, and the existing `variation_group_key` collapse handled
+   the size/colour explosion unaided — 12 rows resolved to 3 families, so search shows one pair
+   of socks rather than six.
+
+**Verified live** on a deliberately small sample (the intended pace is a queue, never saturation):
+two `seed_products` runs created 100 stubs for 11 Keepa tokens each; three `hydrate_products` runs
+hydrated 75 products at exactly 4 tokens/ASIN. `recompute_derived` then parked 48 (38 `BATTERY`,
+9 Amazon devices, 1 Blu-ray) and left **27 genuine gifts** — LEGO, board games, Montessori sets,
+plush, chess, Tapo cameras — spread across all three price bands, quality 0.836–0.973, collapsing
+to a small set of `variation_group_key` values. Tightening the standards three times over the
+sample cost **zero Keepa tokens**, which is the whole point of `recompute_derived`. All four
+schedules registered with their crons.
+
+
+### Phase 5 — Enrichment & embeddings ✅ DONE
 - `enrich_products`: structured-output LLM call → 6–10 `ProductFacet` synthetic queries + controlled
   vocabulary tags → batch embed at 512 dims → store as `halfvec`.
 - Controlled vocabularies for occasion / recipient / interest defined as Python constants + Admin
@@ -868,21 +1144,180 @@ the "Verify" line of each phase, run manually against the live app/DB.
 - **Verify:** spot-check 20 products in Admin — facets read like real user queries, tags are sane,
   cost per product is within expectation (log it in the digest).
 
-### Phase 6 — Topics & curation
-- Manual Topic creation in Admin (must work before any LLM generation).
-- `decompose_topic`, `run_search_terms`, `generate_topics`, `curate_topics`, `dedupe_topics`.
-- Quality gate + `is_indexable` computation.
-- **Seed 30–50 topics by hand** covering the biggest occasions/recipients.
-- **Verify:** each seeded topic has ≥12 diverse, genuinely relevant products; `is_indexable`
-  flips correctly; pinning/excluding survives a recompute.
+**Delivered.** `apps/catalog/vocabularies.py` (19 occasions, 26 recipients, 70 interests, all
+ASCII-slug keys with Spanish labels), `apps/catalog/enrichment.py` (prompt, strict JSON schema,
+validation) and `apps/pipelines/pipelines/enrich.py` (`enrich_products`, `*/15 * * * *`, 10/run).
 
-### Phase 7 — Search engine (no UI yet)
-- `normalize`, `retrieval` (HNSW + FTS + trigram + RRF), `ranking`, `diversity`, result cache.
-- `manage.py search "<query>"` printing ranked results with score breakdown.
-- **Verify:** run ~40 real-sounding Spanish queries; tune `RankingConfig` weights from Admin until
-  results are good; confirm p50 latency < 200 ms.
+**Deviations, and why:**
+1. **Two facet types, not three.** `SYNTHETIC_QUERY` (6–8) plus one `SUMMARY` at weight 0.6.
+   `GIFT_ANGLE` stays in the enum but is unused: every extra facet is another halfvec row *and*
+   another HNSW index entry, and the storage maths below does not leave room for a third type.
+2. **The vocabulary legend is in the prompt.** The schema's `enum` constrains the model to valid
+   keys, but a key is a slug — nothing in `nino` says "6–11 años". Without the legend the model
+   tagged a 4-year-old LEGO set as `nino` instead of `nino-pequeno`. Sending ~1 400 tokens of
+   `clave = significado` fixed it and raised cost per product from $0.0011 to $0.0014. Worth it:
+   these tags are the hard filters behind advanced search, so a wrong tag is a wrong result.
+3. **Life stages live in `RECIPIENTS`.** Keepa gives no reliable per-product age, so the "Edad"
+   slot in §6.5 resolves to recipient keys (`bebe`, `nino-pequeno`, `nino`, `adolescente`, …)
+   rather than a numeric range.
+4. **All-or-nothing per product.** If the model returns fewer than `min_queries` usable queries,
+   the product is marked `FAILED` and *no* facets are written. A half-enriched product would rank
+   badly forever and look like a search bug rather than an enrichment bug.
+5. **`FAILED` is not retried automatically.** It needs `--payload '{"retry_failed": true}'`.
+   Retrying a product the model cannot describe, every 15 minutes, forever, is an unbounded bill.
+6. **Enrichment failures never touch `availability_note`.** That field belongs to the quality gate
+   and `recompute_derived` rewrites it; the failure reason goes in the `PipelineStepRun` context.
+7. **`reenrich` option** re-runs products that are already `DONE` — the switch to pull after
+   changing the prompt or the vocabularies. Facets are replaced, not merged: the LLM returns no
+   stable identity across runs, so there is nothing to match old rows against.
 
-### Phase 8 — Public site
+**Verified live** on all 27 servible products: **218 facets, 0 without an embedding**, 8.1 facets
+per product, **$0.0247 total — $0.00095 per product**, zero failures. Spot-checked output reads
+like real queries ("regalo de reyes para una niña que inventa historias"), not restated titles.
+A live cosine search over the facets returned sensible products for three unseen queries at
+similarity 0.61–0.80, confirming the query↔query premise of §6.1 end to end.
+
+> **Capacity note, for Phase 10.** At 8.1 facets/product a `halfvec(512)` row plus its HNSW index
+> entry costs roughly 2.5 KB. That puts the practical ceiling of Heroku `essential-0` (1 GB) at
+> **~20–25k enriched products**, not the 50k §6.2 assumed — §6.2 counted vector data but not the
+> index. Options when we approach it: drop to 6 facets, cap the catalogue, or move to
+> `standard-0` (4 GB). Not urgent, but it is the first limit we will hit.
+
+### Phase 6 — Search engine (no UI yet) ✅ DONE
+
+> **Swapped with Topics.** This was Phase 7. §6.6 defines `curate_topics` as "re-runs full
+> retrieval for a Topic", so Topics depends on the retrieval stack. Building Topics first would
+> have meant a throwaway retrieval or a stubbed `curate_topics`. The two phases are built back to
+> back, retrieval first.
+
+Built: `apps/search/normalize.py`, `retrieval.py`, `ranking.py`, `engine.py`, plus
+`manage.py search` (single query, score breakdown) and `manage.py search_report` (40-query batch
+with a quality summary). Diversity lives in `ranking.py` rather than a separate `diversity.py` —
+it shares the `Result` dataclass and is 60 lines; a separate module would have been indirection
+for its own sake.
+
+**Deviations from the spec, and why:**
+
+1. **Two normalisations, not one.** §6.3 L0 says "lowercase, unaccent, collapse, strip stopwords".
+   Stripping stopwords before embedding would destroy the signal the facets were written to match
+   — "regalo para mi madre" and "regalo madre" are not the same sentence to an embedding model.
+   So `normalize()` (accent- and punctuation-free, word order intact) is what gets embedded, and
+   `cache_key()` applies stopword stripping on top, purely so phrasings of the same intent share
+   one cache entry and one `QueryDemand` row.
+2. **A Spanish *unaccented* FTS configuration was required.** The index built in Phase 1 used the
+   stock `spanish` config, which preserves accents, while queries arrive accent-free. The lexical
+   arm therefore matched nothing on any query containing an accented word — which in Spanish is
+   most of them — and only the trigram arm was firing, by accident. Catalog migration `0005`
+   creates `spanish_unaccent` (`unaccent` + `spanish_stem`) and rebuilds `facet_text_fts_idx`
+   against it. `retrieval.FTS_CONFIG` must always equal the index expression or Postgres silently
+   sequential-scans.
+3. **A relevance floor was added, and it is the most important line in the engine.**
+   `min_facet_similarity` originally only bounded the semantic arm, so a product that tripped only
+   the trigram arm entered the pool with `similarity = 0` and was then ranked on quality and
+   freshness alone. In practice that meant the highest-rated product in the catalogue answered
+   every query it had no business answering — a security camera was the fourth result for
+   "regalo para alguien que le encanta cocinar". `retrieval._is_relevant` now requires either a
+   real semantic match or a full-text hit (`websearch` requires every term, so it is trustworthy
+   on its own). Trigram can no longer promote a candidate by itself. An empty result page is
+   recoverable; a confident, irrelevant one is not.
+4. **Trigram threshold raised 0.2 → 0.45.** Spanish gift queries share heavy boilerplate
+   ("regalo para … que le gusta …"), so a loose threshold makes every facet resemble every query.
+5. **The category cap scales with page size**, `max(config.max_per_category, ceil(limit/3))`.
+   The absolute 3 was written for a 24-result page, where it would have answered "regalo para un
+   niño" with 3 toys and 21 unrelated products — the category usually *is* the query. Brand stays
+   absolute at 2, because two of the same brand is two too many at any page size. The Admin value
+   now acts as a floor, so small pages keep the tighter spread.
+6. **RRF contributions are capped at one per product per list.** A product with eight facets would
+   otherwise accumulate eight contributions and outrank a better product that matched on one.
+7. **The result cache stores ordering, not products.** Product rows are re-read live and the hard
+   filters re-applied on read, so a product deactivated or blocked after caching is never served.
+   Caching rendered products would have served it for up to `cache_ttl_hours`.
+8. **One shared `LLMClient`, warmed at startup.** Opening the TLS connection measured **6.9 s cold
+   versus 375 ms warm** — a per-process cost, not a per-call one. `SearchConfig.ready()` warms it
+   in a daemon thread for `gunicorn`/`runserver` only (`DISABLE_SEARCH_WARMUP` opts out), costing
+   one embedding call per dyno boot.
+
+**Verified live** against production: 40 real-sounding Spanish queries (accents, typos, vague
+intent) via `manage.py search_report`. **Zero duplicate variation families across all 40** — the
+11-product FUNNYB&G craft-kit family collapses to one result every time. 39 of 40 returned
+results; the one that did not ("regalo para mi jefe") correctly returns nothing, because a
+27-product toy catalogue genuinely contains no boss-appropriate gift. Before the relevance floor
+the same batch averaged 11.3 results per query; after, 6.5 — the difference was entirely junk.
+
+**On the < 200 ms p50 target:** measured p50 is 1 062 ms locally, but that is not the engine.
+A single database round trip from this machine to Heroku Postgres EU measures **79 ms**, and a
+search makes six; embedding adds ~375 ms warm. On a dyno sitting next to the database those six
+round trips cost single-digit milliseconds, putting an uncached search at roughly **400 ms,
+dominated entirely by the OpenAI embedding call**, and a cached one in single digits. The < 200 ms
+target is therefore only achievable on cache hits. This is acceptable — the cache absorbs repeat
+traffic and no chat-completion call ever touches the request path — but it should be re-measured
+on the dyno in Phase 10 rather than assumed.
+
+**Still open, deliberately:** ranking weights are untuned. With 27 enriched products there is not
+enough signal to tune them honestly, and `ctr_score` is 0.000 for every product until Phase 9
+collects clicks. Re-run `manage.py search_report` and tune from Admin once the catalogue is in the
+thousands.
+
+### Phase 7 — Topics & curation ✅ DONE (verification deferred, see below)
+
+Built: `apps/topics/services.py` (canonical text, curation, §9.2 gate),
+`apps/pipelines/pipelines/topics.py` (`curate_topics`, `decompose_topic`, `dedupe_topics`),
+`run_search_terms` in `ingest.py`, and `manage.py seed_topics`.
+
+**Deviations from the spec, and why:**
+
+1. **`generate_topics` was not built.** It proposes new topics from coverage gaps and demand, but
+   `QueryDemand` is empty until Phase 9 collects searches, so today it would have to invent topics
+   from nothing — which is exactly how a site ends up with 500 thin pages. The 12 hand-written
+   seed topics are the reference set; `generate_topics` lands once there is real demand data to
+   mine. §9.3 caps publication at 10/day regardless.
+2. **`run_search_terms` uses Product Finder with a `title` filter, not Keepa's `search` endpoint.**
+   Finder returns bare ASINs at ~11 tokens per call and hydration fills in details at 4 tokens
+   each; `search` returns full product objects at a much worse rate for ASINs that may be
+   discarded at the quality gate anyway. Measured: **3 terms → 50 new products for 31 tokens**,
+   roughly 0.6 tokens per product discovered, against ~4 for category seeding. It reuses the
+   identical quality thresholds, so topics cannot become a back door for junk.
+3. **Canonical text skips facets already named in the title.** Appending them produced
+   *"Regalos para madres para madre"* — repetition that moves the vector without adding meaning.
+   A five-character prefix match handles Spanish inflection ("madre"/"madres",
+   "cocina"/"cocinar"). Nothing is lost: the facets still apply as hard filters via `topic_slots`.
+4. **Curation calls `engine.search` with `use_cache=False`.** A cached ordering would let a topic
+   page drift behind live search, which is the exact disagreement this phase exists to prevent.
+5. **Pinned links are renumbered to the top slots** rather than keeping their old rank, so an
+   editor's choices actually lead the page.
+6. **`dedupe_topics` never merges**, per §6.6 — it records a `TopicAlias` and fires a Telegram
+   warning for an editor to confirm. It also refuses to propose demoting an indexed page in
+   favour of one that is not.
+
+**Verified live** against production:
+
+- `seed_topics --embed` created 12 topics with clean canonical text and embeddings.
+- `curate_topics` ran all 12 in one pass, **0 Keepa tokens, $0 LLM** (embeddings already existed).
+- The §9.2 gate behaves correctly on real data: `regalos-de-cumpleanos` linked **15 products
+  across 13 brands but only 2 categories**, so it correctly stayed `is_indexable = False` on the
+  ≥4-categories rule. Topics needing adult recipients (`madres`, `padres`, `abuelos`) linked
+  **0 products** — correct, because the 27-product sample is almost entirely toys.
+- **Pinning and exclusion survive a recompute**, confirmed directly: a pinned link moved from rank
+  15 to rank 1 and stayed pinned; an excluded link was dropped from the page and from
+  `linked_count` (15 → 14) while remaining in the table.
+- `decompose_topic` produced genuine catalogue keywords rather than gift phrases — *"set
+  jardinería principiantes"*, *"masajeador de cuello"*, *"joyero organizador"* — 25 terms across
+  3 topics for **$0.000661**.
+- `run_search_terms` then turned 3 of those terms into **50 new candidate products for 31 tokens**.
+
+**Verification deliberately deferred:** the "≥12 diverse, genuinely relevant products per topic"
+check cannot be judged against 27 enriched products, nearly all toys. The gate is demonstrably
+working — it is rejecting everything it should — but whether curation picks *good* products at
+scale is unanswerable until the catalogue is in the thousands. Re-run `curate_topics --force` and
+re-read the table then.
+
+**Throughput was raised to get there.** Enrichment was the bottleneck at 960 products/day against
+a hydration capacity of 7 200, and only enriched products are searchable. Now: `seed_products`
+200/hour, `enrich_products` 40 per 15 min (~3 800/day, ~$3.60/day). Steady-state Keepa use is
+roughly **71% of the 30 240 token daily budget**, leaving headroom for `refresh_products` and
+`run_search_terms`. Throttle back down once the catalogue is large enough to tune against.
+
+### Phase 8 — Public site ✅ DONE
 - Base layout, header with embedded simple-search component, footer, Tailwind design tokens.
 - `ProductCard` component with variants + all three CTAs.
 - Home, `/regalos/<slug>/`, hub pages, `/buscar/`, `/buscador-avanzado/` (+ results), legal pages.
@@ -890,14 +1325,110 @@ the "Verify" line of each phase, run manually against the live app/DB.
 - **Verify:** every page renders on mobile; Lighthouse performance ≥ 90; simple search redirects to
   a topic when it matches strongly.
 
+**Deviations from the plan, and why:**
+
+1. **`/go/<click_id>/` became `/go/<product_id>/?b=…&p=…&pos=…&t=…`.** The URL map as written
+   cannot exist: §8.3 has the redirect view *create* the `ClickEvent`, so its id does not exist at
+   the moment the href is rendered. The product id goes in the path, the event is created in the
+   view, and the id it receives is what lands in the `ascsubtag`. No open-redirect surface: the
+   destination is built from settings plus the product's own ASIN, never from request data.
+2. **Click tracking shipped in Phase 8, not Phase 9.** Every card CTA needs a working `/go/`
+   target, so building the cards without it would have meant shipping dead links and rewriting
+   every template a phase later. Phase 9 keeps `PageView`, `UserQuery` and `QueryDemand`.
+3. **`with_summaries(products)` bulk-loads the SUMMARY facet.** The obvious implementation is a
+   property on `Product`, but that is one query per card — 24 per page. The helper does one query
+   for the whole page and sets `_gift_summary`; `Product.gift_summary` reads it and is
+   deliberately *not* lazy, so an N+1 shows up as a blank line rather than as a slow page.
+4. **Advanced search uses Post/Redirect/Get** with the slots held in the session, instead of
+   encoding them in the query string. Reloading results never resubmits, and the unbounded
+   combinatorial URL space never becomes crawlable in the first place.
+5. **Hub routes are declared before `regalos/<slug:slug>/`.** Otherwise `ocasiones` resolves as a
+   topic slug and the hubs 404. This also means those four words are permanently reserved and must
+   never be issued as topic slugs.
+6. **JSON-LD is assembled in Python (`apps/web/seo.py`), not written in templates.** A stray quote
+   in a product title silently invalidates a hand-written block, and Search Console reports it only
+   as "parsing error" with no page attribution. Serialising a dict cannot emit invalid JSON. We
+   emit `ItemList`, never `Product`: `Product` markup wants `offers.price`, and §1 says we have no
+   price to give.
+7. **No cookie banner.** The site sets only the session and CSRF cookies, both strictly necessary
+   under art. 22.2 LSSI-CE, so no prior consent is required. This holds only as long as no
+   third-party analytics or ad script is ever added.
+8. **The four legal templates carry `[PENDIENTE: …]` markers** for the operator's identity, NIF,
+   address and contact email. These are a legal requirement (art. 10 LSSI-CE) and **must be filled
+   before the site is opened to the public in Phase 10.**
+
+**Live verification (dev, against PROD DB):** all 17 routes return their expected status
+(`/no-existe/` → 404, everything else 200). `/go/` writes a `ClickEvent` and 302s to
+`https://www.amazon.es/dp/…?tag=…&ascsubtag=rm-topicpage-0-1`. A search page renders 85 outbound
+anchors, all 85 through `/go/` and all 85 `rel="nofollow sponsored"`. Advanced search round-trips
+POST → 302 → results with `noindex, nofollow`.
+
+**Deferred:** Lighthouse and the mobile pass are worth running in Phase 10 against the dyno, not
+against `runserver` — local numbers measure the Python dev server, not the deployed site.
+
+**"Simple search redirects to a topic" — verified.** Five seed topics were hand-promoted to ACTIVE
+(the ones with ≥3 linked products), after which `/buscar/?q=regalos de cumpleanos` 302s to
+`/regalos/regalos-de-cumpleanos/` and `?q=regalos para adolescentes` to its own topic, while
+`?q=manualidades` correctly renders results rather than redirecting — it is below the 0.90
+threshold. Note that these five still fail the §9.2 gate on the ≥4-categories rule, so the nightly
+`curate_topics` will demote them again; that is the gate working as designed, and the promotion
+snippet is in the runbook for re-running it.
+
 ### Phase 9 — Tracking
-- `/go/<click_id>/` redirect view, affiliate URL builder with `ascsubtag`, `ClickEvent` writing.
-- `PageView` middleware with bot filtering and salted session hashing.
-- `UserQuery` write-behind + `mine_query_demand` + `recompute_ctr`.
-- Admin dashboards: clicks by placement/button/position, top queries, zero-result queries,
-  topic performance.
+- ~~`/go/<click_id>/` redirect view, affiliate URL builder with `ascsubtag`, `ClickEvent` writing.~~
+  **Delivered in Phase 8** — the product cards needed a live target. See Phase 8 deviations 1–2.
+- ~~`PageView` middleware with bot filtering and salted session hashing.~~ **Delivered.**
+  `apps/tracking/middleware.py` records GET/200/HTML responses only, skipping `/admin/`,
+  `/static/`, `/media/`, `/go/`, `/healthz`, HTMX partials and the usual crawler files.
+- ~~`UserQuery` write-behind~~ → **delivered as a synchronous insert** (deviation 2).
+  `mine_query_demand` and `recompute_ctr` are **deliberately not built yet**: the decision was to
+  record the raw signal now and mine it once there is a meaningful volume. `QueryDemand` therefore
+  still has no write site.
+- ~~Admin dashboards: clicks by placement/button/position, top queries, zero-result queries,
+  topic performance.~~ **Delivered** as the operations panel, which covers those plus worker
+  health, queue depth, pipeline control, cost/budget, catalogue health and a live event feed.
 - **Verify:** clicking each CTA writes a correct `ClickEvent` and lands on the right Amazon page
   with the tag present; `ascsubtag` visible in the final URL.
+
+**Phase 9 deviations**
+
+1. **A custom `AdminSite` adds a control panel at `/admin/panel/`**, against §2's "Django Admin
+   only". `/admin/` itself is still the stock index — the app and model list, unchanged — with one
+   banner linking to the panel. New app `apps/ops` holds it: `apps.py` (the `AdminConfig` subclass
+   — it must not import models, since app configs load before the registry is ready),
+   `admin_site.py` (the site and its nine extra URLs) and `metrics.py` (every figure on the pages;
+   read-only, no models of its own). Templates live in `templates/admin/ops/`, styling in
+   `static/admin/ops.css` written against Django's own admin CSS variables so it follows the
+   light/dark theme. The panel does **not** load `site.css` — Tailwind is for the public site only.
+   The panel has six pages: Resumen, Pipelines y trabajos, Productos (with a per-product
+   drill-down), Temas y términos, Búsqueda y tráfico, Coste y presupuesto, plus a per-run
+   drill-down.
+2. **The panel is strictly read-only.** Not one form, not one POST route — every page links to the
+   changelist that already owns the corresponding action, so there is exactly one place where each
+   mutation lives and the admin log keeps recording it.
+3. **`session_key` everywhere is now a salted daily hash**, not the Django session key. See
+   `apps/tracking/session.py`: `HMAC(secret, IP|user-agent)` re-salted every day, truncated to 32
+   chars. No cookie, no stored IP, no stored user agent, and the value stops being linkable after
+   24 hours. `/go/` was writing the raw session key before this and no longer does.
+4. **Search result links carry `uq=<UserQuery id>`**, so a click can be attributed to the query
+   that produced it. That is what makes a CTR-per-query roll-up possible later without changing
+   anything else.
+5. **Queries are recorded synchronously**, not write-behind and not through the job queue. One
+   small insert per search is cheaper than the round trip it would take to defer it, and both
+   `record_query` and the `PageView` middleware swallow their own errors, so tracking can never
+   take a page down.
+6. **Database capacity is read live from Postgres** (`pg_database_size`, `pg_stat_activity`,
+   `pg_stat_user_tables`) and shown both at the top of the Resumen page and in the banner on
+   `/admin/`. The `essential-0` limits — 1 GB, 20 connections — are constants in `metrics.py`; the
+   connection cap is read from `pg_roles.rolconnlimit` first, since that is where Heroku enforces
+   it. This is the early-warning system for the catalogue ceiling described in Phase 11.
+7. **Topic management got a lifecycle, not a new screen.** `/admin/topics/topic/` remains the
+   place topics are created and edited, but the §9.2 gate reason is now a column (*Qué le falta*)
+   and a read-only field, the form is ordered around the facets that actually drive retrieval,
+   and the panel shows every topic with its stage and what will unblock it. `decompose_topic`,
+   `run_search_terms` and `curate_topics` accept a `topic_ids` payload so the **Procesar ahora**
+   action can push one topic through immediately instead of waiting for the overnight cron; for
+   `curate_topics`, targeting by id implies `force`.
 
 ### Phase 10 — SEO & launch
 - Sitemaps, `robots.txt`, JSON-LD, canonical/OG tags, 301 slug-change handling.
@@ -912,15 +1443,14 @@ Publish ≤10 topics/day · review `QueryDemand` weekly and promote real demand 
 tune ranking weights from click data · raise Keepa plan if the backlog grows · then, and only then,
 start the article pipeline (max 1/day, irregular times, human-reviewed).
 
+**`prune_catalog` (§7.5) belongs here, not earlier.** Rules 1–3 (dead ASINs, long-parked, long-
+failed) can be enabled as soon as there is anything old enough to match. Rule 4 — evicting
+enriched products with no clicks and no impressions — needs Phase 9 tracking data and enough
+traffic to distinguish "nobody wanted it" from "nobody was ever shown it", so it stays in `dry_run`
+until then. Watch DB size in the daily digest: at ~20 KB per enriched product, `essential-0` fills
+at ~20–25k products and that, not the Keepa budget, is what caps the catalogue.
+
 ---
 
-## 14. Open items requiring the owner
-
-1. Set the missing Heroku config vars listed in §11 (I can run these once approved).
-2. Confirm the Telegram bot is an **admin** of channel `-1002682055833`.
-3. Confirm GitHub repo secrets exist: `HEROKU_API_KEY`, `HEROKU_APP_NAME`, `HEROKU_EMAIL`.
-4. Decide canonical host: `www.regalosmejores.com` or apex.
-5. Create a Cloudflare account and move Namecheap nameservers when Phase 10 starts.
-6. Rotate the AWS access key in `.env`/Heroku — it has been handled in plaintext.
-7. Delete the stale `docs/project_blueprint copy*.md` files once this document is accepted, so
-   Copilot has a single source of truth.
+**Start here:** Phase 0. Everything needed to begin is in this document; the only external
+dependency is the owner checklist in §13, none of which blocks Phases 0–9.

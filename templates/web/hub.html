@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}{{ hub_title }} · {{ SITE_NAME }}{% endblock %}
+{% block og_title %}{{ hub_title }}{% endblock %}
+{% block meta_description %}{{ hub_intro }}{% endblock %}
+{% block og_description %}{{ hub_intro }}{% endblock %}
+
+{% block head_extra %}
+  <script type="application/ld+json">{{ jsonld_crumbs }}</script>
+{% endblock %}
+
+{% block content %}
+  <nav aria-label="Migas de pan" class="mb-4 text-sm text-slate-500">
+    <a href="{% url 'web:home' %}" class="hover:underline">Inicio</a>
+    <span aria-hidden="true" class="mx-1">/</span>
+    <span class="text-slate-700">{{ hub_title }}</span>
+  </nav>
+
+  <header class="mb-8">
+    <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">{{ hub_title }}</h1>
+    <p class="mt-2 max-w-2xl text-slate-600">{{ hub_intro }}</p>
+  </header>
+
+  {% if topics %}
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {% for topic in topics %}
+        {% include "components/topic_card.html" %}
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="rounded-xl border border-slate-200 p-6 text-slate-600">
+      Todavía no hay temas publicados en esta sección. Prueba la
+      <a href="{% url 'web:advanced_search' %}" class="underline">búsqueda avanzada</a>.
+    </p>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "web/legal/_base.html" %}
+
+{% block legal_content %}
+  <p>
+    {{ SITE_NAME }} usa el mínimo imprescindible de cookies. No utilizamos cookies publicitarias ni
+    de perfilado, y no compartimos datos con redes de anuncios.
+  </p>
+
+  <h2 class="pt-4 text-lg font-semibold text-slate-900">Cookies que usamos</h2>
+  <ul class="list-disc space-y-2 pl-5">
+    <li>
+      <strong>Sesión (técnica, necesaria)</strong>: identifica tu visita de forma anónima para
+      recordar los filtros de la búsqueda avanzada entre una página y la siguiente. Caduca al
+      cerrar el navegador o a los pocos días.
+    </li>
+    <li>
+      <strong>CSRF (técnica, necesaria)</strong>: protege los formularios del sitio frente a envíos
+      fraudulentos desde otras webs.
+    </li>
+  </ul>
+
+  <p>
+    Al tratarse exclusivamente de cookies técnicas necesarias para prestar el servicio que has
+    solicitado, no requieren consentimiento previo conforme al art. 22.2 de la LSSI-CE.
+  </p>
+
+  <h2 class="pt-4 text-lg font-semibold text-slate-900">Cookies de terceros</h2>
+  <p>
+    Este sitio no instala cookies de terceros. Ahora bien, cuando sigues un enlace a Amazon.es,
+    Amazon puede instalar las suyas en tu navegador, según su propia política de cookies.
+  </p>
+
+  <h2 class="pt-4 text-lg font-semibold text-slate-900">Cómo eliminarlas</h2>
+  <p>
+    Puedes borrar o bloquear las cookies desde la configuración de tu navegador. Si las bloqueas,
+    la búsqueda avanzada podría no conservar tus filtros.
+  </p>
+{% endblock %}

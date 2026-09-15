@@ -1,0 +1,92 @@
+{% extends "admin/ops/base.html" %}
+
+{% block panel_breadcrumb %}
+  &rsaquo; <a href="{% url 'admin:ops_products' %}">Productos</a>
+  &rsaquo; {{ product.asin }}
+{% endblock %}
+
+{% block panel %}
+
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>{{ product.title|truncatechars:90 }}</h2>
+      <a href="{% url 'admin:catalog_product_change' product.pk %}" class="ops-muted">editar &rsaquo;</a>
+    </div>
+
+    <div class="ops-product-hero">
+      {% if product.image_urls %}
+        <img src="{{ product.image_urls.0 }}" alt="" referrerpolicy="no-referrer">
+      {% endif %}
+      <div>
+        <p class="ops-muted">
+          ASIN {{ product.asin }} · dominio {{ product.domain_id }}
+          {% if product.brand %} · {{ product.brand }}{% endif %}
+          {% if product.price_band %} · {{ product.get_price_band_display }}{% endif %}
+          {% if product.sales_rank_pct is not None %} · percentil de ventas {{ product.sales_rank_pct|floatformat:2 }}{% endif %}
+        </p>
+        <p class="ops-muted">
+          Visto por primera vez {{ product.first_seen_at|date:"d/m/Y H:i" }} ·
+          actualizado {{ product.updated_at|timesince }} atrás
+          {% if product.availability_note %} · {{ product.availability_note }}{% endif %}
+        </p>
+      </div>
+    </div>
+
+    <div class="ops-stats">
+      {% for s in stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+    </div>
+  </section>
+
+  <div class="ops-split">
+
+    <section class="ops-section">
+      <div class="ops-head">
+        <h2>Facetas</h2>
+        <span class="ops-muted">lo que el LLM cree que este producto responde</span>
+      </div>
+      <ul class="ops-list">
+        {% for f in facets %}
+          <li>
+            <span>{{ f.text }}</span>
+            <span class="ops-muted">
+              {{ f.get_facet_type_display|lower }} · peso {{ f.weight|floatformat:2 }}
+              {% if not f.embedding %}<span class="ops-tag is-bad">sin vector</span>{% endif %}
+            </span>
+          </li>
+        {% empty %}
+          <li class="ops-muted">Sin facetas. Este producto no es localizable por búsqueda semántica.</li>
+        {% endfor %}
+      </ul>
+    </section>
+
+    <section class="ops-section">
+      <div class="ops-head"><h2>Aparece en</h2></div>
+      <ul class="ops-list">
+        {% for link in links %}
+          <li>
+            <span>
+              <a href="{% url 'admin:topics_topic_change' link.topic.pk %}">{{ link.topic.title }}</a>
+              {% if link.is_pinned %}<span class="ops-tag is-info">fijado</span>{% endif %}
+              {% if link.is_excluded %}<span class="ops-tag is-bad">excluido</span>{% endif %}
+            </span>
+            <span class="ops-muted">puesto {{ link.rank }} · afinidad {{ link.score|floatformat:3 }}</span>
+          </li>
+        {% empty %}
+          <li class="ops-muted">En ningún tema todavía. curate_topics lo enlazará si encaja.</li>
+        {% endfor %}
+      </ul>
+
+      <h3>Clics recientes</h3>
+      <ul class="ops-list">
+        {% for c in clicks %}
+          <li>
+            <span>{{ c.get_placement_display }} · {{ c.get_button_display }}</span>
+            <span class="ops-muted">{{ c.created_at|timesince }} atrás</span>
+          </li>
+        {% empty %}<li class="ops-muted">Ningún clic registrado.</li>{% endfor %}
+      </ul>
+    </section>
+
+  </div>
+
+{% endblock %}

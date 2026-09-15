@@ -1,0 +1,86 @@
+{% extends "admin/ops/base.html" %}
+
+{% block panel %}
+
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Últimos {{ traffic.days }} días</h2>
+      <a href="{% url 'admin:search_userquery_changelist' %}" class="ops-muted">todas las búsquedas &rsaquo;</a>
+    </div>
+    <div class="ops-stats">
+      {% for s in traffic.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+    </div>
+  </section>
+
+  <section class="ops-section">
+    <div class="ops-grid-4">
+      <div>
+        <h3>Más buscado</h3>
+        <ul class="ops-list">
+          {% for row in traffic.top_queries %}
+            <li><span>{{ row.normalized|truncatechars:38 }}</span><span class="ops-muted">{{ row.n }}</span></li>
+          {% empty %}<li class="ops-muted">Sin datos todavía.</li>{% endfor %}
+        </ul>
+      </div>
+
+      <div>
+        <h3>Sin resultados</h3>
+        <p class="ops-muted">Demanda que el catálogo no cubre.</p>
+        <ul class="ops-list">
+          {% for row in traffic.zero_result_queries %}
+            <li><span class="tone-warn">{{ row.normalized|truncatechars:38 }}</span><span class="ops-muted">{{ row.n }}</span></li>
+          {% empty %}<li class="ops-muted">Ninguna. Bien.</li>{% endfor %}
+        </ul>
+      </div>
+
+      <div>
+        <h3>Clics por sitio</h3>
+        <ul class="ops-list">
+          {% for row in traffic.clicks_by_placement %}
+            <li><span>{{ row.placement|lower }}</span><span class="ops-muted">{{ row.n }}</span></li>
+          {% empty %}<li class="ops-muted">Sin clics todavía.</li>{% endfor %}
+        </ul>
+        <h3>Clics por botón</h3>
+        <ul class="ops-list">
+          {% for row in traffic.clicks_by_button %}
+            <li><span>{{ row.button|lower }}</span><span class="ops-muted">{{ row.n }}</span></li>
+          {% empty %}<li class="ops-muted">—</li>{% endfor %}
+        </ul>
+      </div>
+
+      <div>
+        <h3>Páginas más vistas</h3>
+        <ul class="ops-list">
+          {% for row in traffic.top_pages %}
+            <li><a href="{{ row.path }}" target="_blank" rel="noopener">{{ row.path|truncatechars:38 }}</a><span class="ops-muted">{{ row.n }}</span></li>
+          {% empty %}<li class="ops-muted">Sin visitas registradas.</li>{% endfor %}
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Últimas búsquedas</h2>
+      <a href="{% url 'admin:tracking_clickevent_changelist' %}" class="ops-muted">clics salientes &rsaquo;</a>
+    </div>
+    <ul class="ops-list">
+      {% for q in traffic.recent_queries %}
+        <li>
+          <span>
+            <a href="{% url 'admin:search_userquery_change' q.pk %}">{{ q.raw_text|truncatechars:60 }}</a>
+            {% if q.matched_topic %}<span class="ops-tag is-info">&rarr; {{ q.matched_topic.title|truncatechars:30 }}</span>
+            {% elif q.is_zero_result %}<span class="ops-tag is-bad">0 resultados</span>{% endif %}
+            {% if q.served_from_cache %}<span class="ops-tag">caché</span>{% endif %}
+          </span>
+          <span class="ops-muted">
+            {{ q.result_count }} res.{% if q.latency_ms %} · {{ q.latency_ms }} ms{% endif %} · {{ q.created_at|timesince }} atrás
+          </span>
+        </li>
+      {% empty %}
+        <li class="ops-muted">Todavía no se ha registrado ninguna búsqueda.</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+{% endblock %}
