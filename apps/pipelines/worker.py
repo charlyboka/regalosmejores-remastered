@@ -14,6 +14,7 @@ import socket
 import time
 from decimal import Decimal
 
+from django.db import InterfaceError, OperationalError, connections
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -37,6 +38,12 @@ logger = logging.getLogger(__name__)
 
 IDLE_SLEEP_SECONDS = 2.0
 STALE_SWEEP_EVERY_SECONDS = 300
+
+# Postgres drops idle connections (maintenance restart, laptop sleep, Heroku connection limits).
+# That is not a defect, so the worker reconnects with backoff instead of dying.
+DB_ERRORS = (OperationalError, InterfaceError)
+DB_RETRY_BASE_SECONDS = 2.0
+DB_RETRY_MAX_SECONDS = 60.0
 
 
 def execute(
@@ -134,14 +141,43 @@ class Worker:
     def run_forever(self, *, once: bool = False) -> None:
         sync_schedules()
         logger.info("Worker %s started", self.name)
+        db_failures = 0
         while not self.should_stop:
-            worked = self.run_once()
+            try:
+                worked = self.run_once()
+            except DB_ERRORS as exc:
+                if once:
+                    raise
+                db_failures += 1
+                delay = min(DB_RETRY_BASE_SECONDS * 2 ** (db_failures - 1), DB_RETRY_MAX_SECONDS)
+                logger.warning(
+                    "Database unavailable (attempt %s): %s. Reconnecting in %.0fs.",
+                    db_failures,
+                    exc,
+                    delay,
+                )
+                self._drop_connections()
+                time.sleep(delay)
+                continue
+
+            if db_failures:
+                logger.info("Database connection recovered after %s attempt(s)", db_failures)
+                db_failures = 0
             if once:
                 break
             if not worked:
                 time.sleep(self.sleep_seconds)
         self._heartbeat(current_job=None)
         logger.info("Worker %s stopped after %s job(s)", self.name, self.jobs_processed)
+
+    @staticmethod
+    def _drop_connections() -> None:
+        """Discard dead connections so Django opens fresh ones on the next query."""
+        for conn in connections.all():
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001 - closing a broken socket may fail; ignore it
+                pass
 
     def run_once(self) -> bool:
         """One iteration. Returns True when a job was executed."""
@@ -150,6 +186,8 @@ class Worker:
 
         try:
             tick()
+        except DB_ERRORS:
+            raise
         except Exception:
             logger.exception("Scheduler tick failed")
 
@@ -220,6 +258,8 @@ class Worker:
         self._last_sweep = now
         try:
             job_queue.release_stale_jobs()
+        except DB_ERRORS:
+            raise
         except Exception:
             logger.exception("Stale job sweep failed")
 
@@ -235,5 +275,7 @@ class Worker:
                     "started_at": self.started_at,
                 },
             )
+        except DB_ERRORS:
+            raise
         except Exception:
             logger.exception("Heartbeat write failed")

@@ -484,8 +484,12 @@ rebuild:
 .\scripts\build_css.ps1
 ```
 
-Tailwind writes its progress banner to stderr, so PowerShell reports "exited with code 1" on a
-successful build. Confirm with `Get-Item static\css\site.css` instead of trusting the exit code.
+A successful build prints `Built ...\static\css\site.css (<bytes> bytes).` and exits 0. **A
+non-zero exit is a real failure — never ignore it.** The script asserts the output actually
+contains utility classes, because it used to fail silently: Tailwind writes its banner to stderr,
+and with `$ErrorActionPreference = "Stop"` PowerShell turned that into a terminating error
+mid-write, leaving a truncated `site.css` (~8.6 KB of preflight, zero utilities) and a completely
+unstyled site. A healthy minified build is ~18 KB.
 
 ### Smoke-testing every route
 
@@ -574,5 +578,7 @@ automatically in the Procfile `release` phase; a failing migration aborts the re
 | CI fails on `makemigrations --check` | You changed a model without generating the migration |
 | `uv sync --locked` fails in CI | `uv.lock` was not committed after a dependency change |
 | Tailwind binary "not a valid application" | The download was truncated — delete `.tools/` and rebuild (the script uses `curl.exe` for this reason) |
+| The site renders as an unstyled white page | `static/css/site.css` was built truncated. Rebuild and check it is ~18 KB, not ~8.6 KB |
+| `OperationalError: server closed the connection unexpectedly` in the worker | Postgres dropped an idle connection (maintenance restart, or the laptop slept). The worker reconnects on its own with 2s-60s backoff; it only matters if the warnings never stop |
 | Job queue backlog grows | Worker is down (`heroku ps`), or `PIPELINES_ENABLED=false`, or Keepa tokens are exhausted |
 | Deploy rolled back | The health check failed — read `heroku logs` for the release phase; a failed migration is the usual cause |
