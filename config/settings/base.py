@@ -32,7 +32,9 @@ WSGI_APPLICATION = "config.wsgi.application"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 INSTALLED_APPS = [
-    "django.contrib.admin",
+    # Our AdminSite subclass, whose landing page is the operations panel. Replaces the plain
+    # "django.contrib.admin" entry; every existing @admin.register keeps working unchanged.
+    "apps.ops.apps.OpsAdminConfig",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
@@ -60,6 +62,8 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Last: records only successful HTML GETs, after the response exists.
+    "apps.tracking.middleware.PageViewMiddleware",
 ]
 
 TEMPLATES = [

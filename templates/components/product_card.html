@@ -12,7 +12,7 @@ Two rules are load-bearing here:
 {% with qs=placement|default:'TOPIC_PAGE' %}
 <article class="group flex h-full flex-col overflow-hidden rounded-xl border border-slate-200 transition hover:border-slate-300 hover:shadow-sm">
 
-  <a href="{{ go_url }}?b=IMAGE&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}"
+  <a href="{{ go_url }}?b=IMAGE&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}{% if user_query_id %}&amp;uq={{ user_query_id }}{% endif %}"
      rel="nofollow sponsored" target="_blank"
      class="block bg-slate-50"
      aria-label="Ver {{ product.title|truncatechars:80 }} en Amazon">
@@ -38,7 +38,7 @@ Two rules are load-bearing here:
     </div>
 
     <h3 class="text-sm font-medium leading-snug">
-      <a href="{{ go_url }}?b=TITLE&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}"
+      <a href="{{ go_url }}?b=TITLE&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}{% if user_query_id %}&amp;uq={{ user_query_id }}{% endif %}"
          rel="nofollow sponsored" target="_blank" class="hover:underline">
         {{ product.title|truncatechars:95 }}
       </a>
@@ -58,17 +58,17 @@ Two rules are load-bearing here:
     {% endif %}
 
     <div class="mt-auto flex flex-wrap gap-2 pt-2">
-      <a href="{{ go_url }}?b=SEE_PRICE&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}"
+      <a href="{{ go_url }}?b=SEE_PRICE&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}{% if user_query_id %}&amp;uq={{ user_query_id }}{% endif %}"
          rel="nofollow sponsored" target="_blank"
          class="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700">
         Ver precio
       </a>
-      <a href="{{ go_url }}?b=SEE_REVIEWS&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}"
+      <a href="{{ go_url }}?b=SEE_REVIEWS&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}{% if user_query_id %}&amp;uq={{ user_query_id }}{% endif %}"
          rel="nofollow sponsored" target="_blank"
          class="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
         Ver reseñas
       </a>
-      <a href="{{ go_url }}?b=DETAILS&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}"
+      <a href="{{ go_url }}?b=DETAILS&amp;p={{ qs }}&amp;pos={{ position }}{% if topic_id %}&amp;t={{ topic_id }}{% endif %}{% if user_query_id %}&amp;uq={{ user_query_id }}{% endif %}"
          rel="nofollow sponsored" target="_blank"
          class="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
         Ver detalles

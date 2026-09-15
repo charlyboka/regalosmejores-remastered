@@ -1,0 +1,296 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% comment %}
+The operations console. Read-only except for the small POST forms, which all target
+admin:ops_action and carry a CSRF token.
+
+Styling lives in static/admin/ops.css and is written against Django's own admin CSS variables,
+so it follows the light/dark theme instead of fighting it.
+{% endcomment %}
+
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'admin/ops.css' %}">{% endblock %}
+{% block extrahead %}{{ block.super }}<script src="{% static 'js/htmx.min.js' %}" defer></script>{% endblock %}
+{% block bodyclass %}{{ block.super }} dashboard ops{% endblock %}
+
+{% block content %}
+<div class="ops">
+
+  {# ---------------------------------------------------------------- workers #}
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Estado del sistema</h2>
+      <span class="ops-muted">{{ now|date:"d/m/Y H:i" }} UTC</span>
+    </div>
+
+    <div class="ops-stats">
+      {% for s in worker.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+      {% for s in run_stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+    </div>
+
+    <div class="ops-workers">
+      {% for w in worker.workers %}
+        <div class="ops-worker {% if w.is_stale %}is-stale{% endif %}">
+          <span class="ops-dot"></span>
+          <strong>{{ w.name }}</strong>
+          <span class="ops-muted">
+            latido {{ w.at|timesince }} atrás · {{ w.jobs_processed }} trabajos
+            {% if w.current_job %} · ahora: {{ w.current_job.pipeline_key }}{% endif %}
+          </span>
+        </div>
+      {% empty %}
+        <p class="ops-muted">Ningún worker ha arrancado todavía.</p>
+      {% endfor %}
+
+      {% if worker.stats.4.value != "0" %}
+        <form method="post" action="{% url 'admin:ops_action' %}" class="ops-inline">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="retry_failed_jobs">
+          <input type="hidden" name="next" value="{{ request.path }}">
+          <button type="submit" class="ops-btn">Reencolar todos los fallidos</button>
+        </form>
+      {% endif %}
+    </div>
+  </section>
+
+  <div class="ops-split">
+
+    {# ------------------------------------------------------------ pipelines #}
+    <section class="ops-section">
+      <div class="ops-head">
+        <h2>Pipelines</h2>
+        <a href="{% url 'admin:pipelines_pipelineschedule_changelist' %}" class="ops-muted">tabla completa &rsaquo;</a>
+      </div>
+
+      <div class="ops-pipelines">
+        {% for row in pipelines %}
+          <article class="ops-pipeline tone-{{ row.tone }}">
+            <div class="ops-pipeline-main">
+              <div class="ops-pipeline-title">
+                <span class="ops-dot"></span>
+                <strong>{{ row.schedule.pipeline_key }}</strong>
+                <code class="ops-cron">{{ row.schedule.cron }}</code>
+                {% if not row.schedule.enabled %}<span class="ops-tag">pausado</span>{% endif %}
+                {% if row.schedule.consecutive_failures %}
+                  <span class="ops-tag is-bad">{{ row.schedule.consecutive_failures }} fallos seguidos</span>
+                {% endif %}
+                {% if row.pending %}<span class="ops-tag is-info">{{ row.pending }} en cola</span>{% endif %}
+              </div>
+
+              <div class="ops-muted ops-pipeline-meta">
+                {% if row.last_run %}
+                  <a href="{% url 'admin:ops_run' row.last_run.pk %}">última: {{ row.last_run.started_at|timesince }} atrás</a>
+                  · {{ row.last_run.get_status_display|lower }}
+                  {% if row.last_run.duration_ms %}· {{ row.last_run.duration_ms }} ms{% endif %}
+                  {% if row.last_run.items_created or row.last_run.items_updated %}
+                    · {{ row.last_run.items_created }}+{{ row.last_run.items_updated }} ítems
+                  {% endif %}
+                {% else %}
+                  nunca ejecutado
+                {% endif %}
+                · próxima: {% if row.schedule.next_run_at %}{{ row.schedule.next_run_at|date:"d/m H:i" }}{% else %}—{% endif %}
+                · máx {{ row.schedule.max_per_run }}/vez
+              </div>
+            </div>
+
+            <div class="ops-pipeline-actions">
+              <form method="post" action="{% url 'admin:ops_action' %}">
+                {% csrf_token %}
+                <input type="hidden" name="id" value="{{ row.schedule.pk }}">
+                <input type="hidden" name="next" value="{{ request.path }}">
+                <button type="submit" name="action" value="run_now" class="ops-btn" title="Marcar para ejecución inmediata">Ejecutar</button>
+                <button type="submit" name="action" value="toggle_schedule" class="ops-btn is-quiet">
+                  {% if row.schedule.enabled %}Pausar{% else %}Activar{% endif %}
+                </button>
+                {% if row.schedule.consecutive_failures %}
+                  <button type="submit" name="action" value="reset_failures" class="ops-btn is-quiet" title="Poner el contador de fallos a cero">Reset</button>
+                {% endif %}
+              </form>
+            </div>
+          </article>
+        {% empty %}
+          <p class="ops-muted">No hay pipelines registrados.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+    {# ----------------------------------------------------------- event feed #}
+    <section class="ops-section">
+      <div class="ops-head">
+        <h2>Actividad</h2>
+        <span class="ops-muted">se actualiza sola cada 15 s</span>
+      </div>
+      <div id="ops-feed"
+           hx-get="{% url 'admin:ops_feed' %}"
+           hx-trigger="every 15s"
+           hx-swap="innerHTML">
+        {% include "admin/ops/_feed.html" %}
+      </div>
+    </section>
+
+  </div>
+
+  {# --------------------------------------------------------------- spending #}
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Coste y presupuesto</h2>
+      <a href="{% url 'admin:pipelines_llmcall_changelist' %}" class="ops-muted">llamadas LLM &rsaquo;</a>
+    </div>
+
+    <div class="ops-stats">
+      {% for s in cost.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+    </div>
+
+    <div class="ops-bar" title="Presupuesto diario consumido">
+      <div class="ops-bar-fill tone-{% if cost.budget_used_pct >= 100 %}bad{% elif cost.budget_used_pct >= 75 %}warn{% else %}good{% endif %}"
+           style="width: {{ cost.budget_used_pct }}%"></div>
+    </div>
+    <p class="ops-muted">
+      Hoy: {{ cost.calls_today }} llamadas · {{ cost.tokens_today }} tokens
+      {% if cost.calls_failed_today %}· <span class="tone-bad">{{ cost.calls_failed_today }} fallidas</span>{% endif %}
+    </p>
+
+    {% if cost.by_purpose %}
+      <ul class="ops-list">
+        {% for row in cost.by_purpose %}
+          <li><span>{{ row.purpose }}</span><span class="ops-muted">{{ row.n }} llamadas · ${{ row.cost|floatformat:4 }}</span></li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+
+  <div class="ops-split">
+
+    {# -------------------------------------------------------------- catálogo #}
+    <section class="ops-section">
+      <div class="ops-head">
+        <h2>Catálogo</h2>
+        <a href="{% url 'admin:catalog_product_changelist' %}" class="ops-muted">productos &rsaquo;</a>
+      </div>
+      <div class="ops-stats is-compact">
+        {% for s in catalog.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+      </div>
+      <ul class="ops-list">
+        {% for row in catalog.by_status %}
+          <li><span>{{ row.label }}</span><span class="ops-muted">{{ row.count }}</span></li>
+        {% endfor %}
+      </ul>
+    </section>
+
+    {# ----------------------------------------------------------------- temas #}
+    <section class="ops-section">
+      <div class="ops-head">
+        <h2>Temas</h2>
+        <a href="{% url 'admin:topics_topic_changelist' %}" class="ops-muted">temas &rsaquo;</a>
+      </div>
+      <div class="ops-stats is-compact">
+        {% for s in topics.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+      </div>
+      {% if topics.needs_review %}
+        <p class="ops-muted">Borradores con más enlaces, listos para revisar:</p>
+        <ul class="ops-list">
+          {% for t in topics.needs_review %}
+            <li>
+              <a href="{% url 'admin:topics_topic_change' t.id %}">{{ t.title }}</a>
+              <span class="ops-muted">{{ t.linked_count }} productos · {{ t.distinct_categories }} cat. · {{ t.distinct_brands }} marcas</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+  </div>
+
+  {# ------------------------------------------------------- búsqueda y clics #}
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Búsqueda y tráfico <span class="ops-muted">· últimos {{ traffic.days }} días</span></h2>
+      <a href="{% url 'admin:search_userquery_changelist' %}" class="ops-muted">consultas &rsaquo;</a>
+    </div>
+
+    <div class="ops-stats">
+      {% for s in traffic.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+    </div>
+
+    <div class="ops-grid-4">
+      <div>
+        <h3>Más buscado</h3>
+        <ul class="ops-list">
+          {% for row in traffic.top_queries %}
+            <li><span>{{ row.normalized|truncatechars:38 }}</span><span class="ops-muted">{{ row.n }}</span></li>
+          {% empty %}<li class="ops-muted">Sin datos todavía.</li>{% endfor %}
+        </ul>
+      </div>
+
+      <div>
+        <h3>Sin resultados</h3>
+        <ul class="ops-list">
+          {% for row in traffic.zero_result_queries %}
+            <li><span class="tone-warn">{{ row.normalized|truncatechars:38 }}</span><span class="ops-muted">{{ row.n }}</span></li>
+          {% empty %}<li class="ops-muted">Ninguna. Bien.</li>{% endfor %}
+        </ul>
+      </div>
+
+      <div>
+        <h3>Clics por sitio</h3>
+        <ul class="ops-list">
+          {% for row in traffic.clicks_by_placement %}
+            <li><span>{{ row.placement }}</span><span class="ops-muted">{{ row.n }}</span></li>
+          {% empty %}<li class="ops-muted">Sin clics todavía.</li>{% endfor %}
+        </ul>
+        <h3>Clics por botón</h3>
+        <ul class="ops-list">
+          {% for row in traffic.clicks_by_button %}
+            <li><span>{{ row.button }}</span><span class="ops-muted">{{ row.n }}</span></li>
+          {% empty %}<li class="ops-muted">—</li>{% endfor %}
+        </ul>
+      </div>
+
+      <div>
+        <h3>Páginas más vistas</h3>
+        <ul class="ops-list">
+          {% for row in traffic.top_pages %}
+            <li><a href="{{ row.path }}" target="_blank" rel="noopener">{{ row.path|truncatechars:38 }}</a><span class="ops-muted">{{ row.n }}</span></li>
+          {% empty %}<li class="ops-muted">Sin visitas registradas.</li>{% endfor %}
+        </ul>
+      </div>
+    </div>
+
+    <h3>Últimas búsquedas</h3>
+    <ul class="ops-list">
+      {% for q in traffic.recent_queries %}
+        <li>
+          <span>
+            <a href="{% url 'admin:search_userquery_change' q.pk %}">{{ q.raw_text|truncatechars:60 }}</a>
+            {% if q.matched_topic %}<span class="ops-tag is-info">→ {{ q.matched_topic.title|truncatechars:30 }}</span>
+            {% elif q.is_zero_result %}<span class="ops-tag is-bad">0 resultados</span>{% endif %}
+          </span>
+          <span class="ops-muted">
+            {{ q.result_count }} res.{% if q.latency_ms %} · {{ q.latency_ms }} ms{% endif %} · {{ q.created_at|timesince }} atrás
+          </span>
+        </li>
+      {% empty %}
+        <li class="ops-muted">Todavía no se ha registrado ninguna búsqueda.</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  {# ------------------------------------------------- acceso a todas las tablas #}
+  <section class="ops-section">
+    <div class="ops-head"><h2>Todas las tablas</h2></div>
+    <div class="ops-apps">
+      {% for app in available_apps %}
+        <div>
+          <h3>{{ app.name }}</h3>
+          <ul class="ops-list">
+            {% for model in app.models %}
+              <li><a href="{{ model.admin_url }}">{{ model.name }}</a></li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+
+</div>
+{% endblock %}

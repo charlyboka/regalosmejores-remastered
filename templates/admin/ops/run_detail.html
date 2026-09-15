@@ -1,0 +1,150 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'admin/ops.css' %}">{% endblock %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Panel</a>
+    &rsaquo; <a href="{% url 'admin:pipelines_pipelinerun_changelist' %}">Ejecuciones</a>
+    &rsaquo; #{{ run.pk }}
+  </div>
+{% endblock %}
+
+{% block content %}
+<div class="ops">
+
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2><span class="ops-dot tone-{{ tone }}"></span> {{ run.pipeline_key }} <span class="ops-muted">#{{ run.pk }}</span></h2>
+      <form method="post" action="{% url 'admin:ops_action' %}" class="ops-inline">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.path }}">
+        {% if run.job_id %}
+          <input type="hidden" name="id" value="{{ run.job_id }}">
+          <button type="submit" name="action" value="retry_job" class="ops-btn">Reintentar este trabajo</button>
+        {% endif %}
+      </form>
+    </div>
+
+    <div class="ops-stats">
+      <div class="ops-stat tone-{{ tone }}">
+        <span class="ops-stat-value">{{ run.get_status_display }}</span>
+        <span class="ops-stat-label">Estado</span>
+        {% if run.skip_reason %}<span class="ops-stat-detail">{{ run.skip_reason }}</span>{% endif %}
+      </div>
+      <div class="ops-stat">
+        <span class="ops-stat-value">{% if run.duration_ms %}{{ run.duration_ms }} ms{% else %}—{% endif %}</span>
+        <span class="ops-stat-label">Duración</span>
+        <span class="ops-stat-detail">{{ run.started_at|date:"d/m/Y H:i:s" }}</span>
+      </div>
+      <div class="ops-stat">
+        <span class="ops-stat-value">{{ run.items_created }}</span>
+        <span class="ops-stat-label">Creados</span>
+        <span class="ops-stat-detail">{{ run.items_in }} entraron</span>
+      </div>
+      <div class="ops-stat">
+        <span class="ops-stat-value">{{ run.items_updated }}</span>
+        <span class="ops-stat-label">Actualizados</span>
+        {% if run.items_failed %}<span class="ops-stat-detail tone-bad">{{ run.items_failed }} fallidos</span>{% endif %}
+      </div>
+      <div class="ops-stat">
+        <span class="ops-stat-value">${{ run.llm_cost_usd|floatformat:4 }}</span>
+        <span class="ops-stat-label">Coste LLM</span>
+      </div>
+      <div class="ops-stat">
+        <span class="ops-stat-value">{{ run.keepa_tokens_used }}</span>
+        <span class="ops-stat-label">Tokens Keepa</span>
+      </div>
+    </div>
+
+    {% if run.error %}
+      <h3>Error</h3>
+      <pre class="ops-pre tone-bad">{{ run.error }}</pre>
+    {% endif %}
+
+    {% if run.context %}
+      <h3>Contexto</h3>
+      <pre class="ops-pre">{{ run.context|pprint }}</pre>
+    {% endif %}
+  </section>
+
+  <section class="ops-section">
+    <div class="ops-head"><h2>Pasos</h2></div>
+    <ul class="ops-feed">
+      {% for step in steps %}
+        <li class="tone-{% if step.status == 'FAILED' %}bad{% elif step.status == 'SKIPPED' %}warn{% else %}good{% endif %}">
+          <span class="ops-dot"></span>
+          <span class="ops-feed-body">
+            <span class="ops-feed-title">{{ step.name }}</span>
+            <span class="ops-muted">
+              {{ step.get_status_display|lower }}
+              {% if step.duration_ms %}· {{ step.duration_ms }} ms{% endif %}
+              {% if step.error %}· {{ step.error|truncatechars:200 }}{% endif %}
+              {% if step.context %}· {{ step.context }}{% endif %}
+            </span>
+          </span>
+          <time class="ops-muted">{{ step.started_at|date:"H:i:s" }}</time>
+        </li>
+      {% empty %}
+        <li class="ops-muted">Esta ejecución no registró pasos.</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <div class="ops-split">
+    <section class="ops-section">
+      <div class="ops-head"><h2>Llamadas al LLM</h2></div>
+      <ul class="ops-list">
+        {% for call in llm_calls %}
+          <li>
+            <span>
+              {{ call.purpose }}
+              {% if not call.success %}<span class="ops-tag is-bad">error</span>{% endif %}
+            </span>
+            <span class="ops-muted">
+              {{ call.total_tokens }} tokens · ${{ call.cost_usd|floatformat:4 }}
+              {% if call.latency_ms %}· {{ call.latency_ms }} ms{% endif %}
+            </span>
+          </li>
+        {% empty %}
+          <li class="ops-muted">Ninguna.</li>
+        {% endfor %}
+      </ul>
+    </section>
+
+    <section class="ops-section">
+      <div class="ops-head"><h2>Llamadas a Keepa</h2></div>
+      <ul class="ops-list">
+        {% for call in keepa_calls %}
+          <li>
+            <span>{{ call.endpoint }}</span>
+            <span class="ops-muted">−{{ call.tokens_consumed }} · quedaban {{ call.tokens_left }}</span>
+          </li>
+        {% empty %}
+          <li class="ops-muted">Ninguna.</li>
+        {% endfor %}
+      </ul>
+    </section>
+  </div>
+
+  <section class="ops-section">
+    <div class="ops-head"><h2>Ejecuciones anteriores de {{ run.pipeline_key }}</h2></div>
+    <ul class="ops-list">
+      {% for sibling in siblings %}
+        <li>
+          <a href="{% url 'admin:ops_run' sibling.pk %}">#{{ sibling.pk }} · {{ sibling.started_at|date:"d/m H:i" }}</a>
+          <span class="ops-muted">
+            {{ sibling.get_status_display|lower }}
+            {% if sibling.duration_ms %}· {{ sibling.duration_ms }} ms{% endif %}
+            · {{ sibling.items_created }}+{{ sibling.items_updated }} ítems
+          </span>
+        </li>
+      {% empty %}
+        <li class="ops-muted">Es la primera.</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+</div>
+{% endblock %}

@@ -20,11 +20,13 @@ from django.views.decorators.http import require_GET, require_POST
 
 from apps.catalog import vocabularies
 from apps.catalog.models import FacetType, PriceBand, Product, ProductFacet
-from apps.search import engine
+from apps.search import engine, recording
+from apps.search.models import SearchMode, UserQuery
 from apps.search.normalize import normalize, slots_to_sentence
 from apps.topics import services as topic_services
 from apps.topics.models import Topic, TopicKind, TopicStatus
 from apps.tracking.models import ClickButton, ClickEvent, Placement
+from apps.tracking.session import visitor_hash
 
 from . import affiliate, seo
 
@@ -121,6 +123,9 @@ def topic_detail(request: HttpRequest, slug: str) -> HttpResponse:
     if topic.status == TopicStatus.ARCHIVED:
         return _not_found(request)
 
+    # Read by the PageView middleware, so it can attribute the visit without a second lookup.
+    request.page_topic_id = topic.pk
+
     links = topic_services.visible_links(topic)[: PAGE_SIZE + 1]
     shown = [link.product for link in links[:PAGE_SIZE]]
     with_summaries(shown)
@@ -213,13 +218,32 @@ def buscar(request: HttpRequest) -> HttpResponse:
     # Only on the first page: a strong Topic match means a curated, indexable page already
     # exists for this intent. Send the user there rather than serving a thin duplicate of it.
     if page == 1:
-        match = topic_services.match_topic(normalize(raw))
+        normalized = normalize(raw)
+        match = topic_services.match_topic(normalized)
         if match is not None:
+            # Recorded before redirecting: these are the clearest demand signal we get, and
+            # they would otherwise never appear anywhere.
+            recording.record_query(
+                request,
+                raw_text=raw,
+                normalized=normalized,
+                matched_topic=match,
+                result_count=1,
+            )
             return redirect(match.get_absolute_url())
 
     response = engine.search(raw, limit=PAGE_SIZE * page + 1)
     results = response.results[PAGE_SIZE * (page - 1) : PAGE_SIZE * page]
     with_summaries([r.product for r in results])
+    user_query = recording.record_query(
+        request,
+        raw_text=raw,
+        normalized=response.normalized,
+        query_hash=response.query_hash,
+        result_count=len(response.results),
+        served_from_cache=response.served_from_cache,
+        latency_ms=response.latency_ms,
+    )
     return render(
         request,
         "web/search.html",
@@ -231,6 +255,7 @@ def buscar(request: HttpRequest) -> HttpResponse:
             "has_more": len(response.results) > PAGE_SIZE * page,
             "next_page": page + 1,
             "placement": Placement.SIMPLE_SEARCH,
+            "user_query_id": user_query.pk if user_query else None,
             "suggestions": [] if results else topic_services.suggestions(limit=6),
         },
     )
@@ -281,6 +306,17 @@ def advanced_results(request: HttpRequest) -> HttpResponse:
     sentence = slots_to_sentence(slots, free_text)
     response = engine.search(sentence, slots=slots, limit=PAGE_SIZE)
     with_summaries([r.product for r in response.results])
+    user_query = recording.record_query(
+        request,
+        raw_text=free_text or sentence,
+        normalized=response.normalized,
+        query_hash=response.query_hash,
+        mode=SearchMode.ADVANCED,
+        slots=slots,
+        result_count=len(response.results),
+        served_from_cache=response.served_from_cache,
+        latency_ms=response.latency_ms,
+    )
     return render(
         request,
         "web/advanced_results.html",
@@ -291,6 +327,7 @@ def advanced_results(request: HttpRequest) -> HttpResponse:
             "results": response.results,
             "start_position": 1,
             "placement": Placement.ADVANCED_SEARCH,
+            "user_query_id": user_query.pk if user_query else None,
             "suggestions": [] if response.results else topic_services.suggestions(limit=6),
         },
     )
@@ -334,18 +371,22 @@ def go(request: HttpRequest, product_id: int) -> HttpResponse:
     if topic_id and not Topic.objects.filter(pk=topic_id).exists():
         topic_id = None
 
-    if not request.session.session_key:
-        request.session.save()
+    # Which search produced this click, when it came from a results page. Validated because it
+    # arrives from the query string; an unknown id is simply dropped.
+    query_id = _bounded_int(request.GET.get("uq"), default=0, maximum=2_000_000_000) or None
+    if query_id and not UserQuery.objects.filter(pk=query_id).exists():
+        query_id = None
 
     click = ClickEvent.objects.create(
         product=product,
         topic_id=topic_id,
+        user_query_id=query_id,
         placement=placement,
         button=button,
         position=_bounded_int(request.GET.get("pos"), default=0, maximum=500) or None,
         page_path=_path(request.META.get("HTTP_REFERER")),
         referrer_host=_host(request.META.get("HTTP_REFERER")),
-        session_key=request.session.session_key or "",
+        session_key=visitor_hash(request),
     )
 
     subtag = affiliate.build_ascsubtag(placement=placement, topic_id=topic_id, click_id=click.pk)

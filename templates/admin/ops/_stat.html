@@ -1,0 +1,6 @@
+{% comment %}One headline figure. Expects `s` to be an ops.metrics.Stat.{% endcomment %}
+<div class="ops-stat tone-{{ s.tone }}">
+  <span class="ops-stat-value">{{ s.value }}</span>
+  <span class="ops-stat-label">{{ s.label }}</span>
+  {% if s.detail %}<span class="ops-stat-detail">{{ s.detail }}</span>{% endif %}
+</div>

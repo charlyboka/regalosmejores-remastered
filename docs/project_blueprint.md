@@ -42,7 +42,7 @@ visually appealing grid of gift cards. Every card exposes several Amazon CTAs
 | Hosting | Heroku EU, app `regalosmejores`, stack `heroku-24`, dynos `web:1` + `worker:1` (Basic) |
 | CDN/DNS | Cloudflare (proxied) in front of Heroku |
 | Styling | Tailwind via the **standalone CLI binary** (no Node buildpack) |
-| Admin/dashboards | **Django Admin only** — customised ModelAdmins, list filters, admin actions |
+| Admin/dashboards | **Django Admin only** — customised ModelAdmins, list filters, admin actions, plus one custom `AdminSite` whose index is the operations panel (§Phase 9 deviation 1) |
 | Analytics | First-party `UserQuery` + `ClickEvent` tables + Google Search Console. **No GA4, no cookie banner** in v1 |
 | LLM | OpenAI `gpt-5.6-luna` (default, overridable per call) |
 | Embeddings | OpenAI `text-embedding-3-small`, `dimensions=512` |
@@ -1377,12 +1377,41 @@ snippet is in the runbook for re-running it.
 ### Phase 9 — Tracking
 - ~~`/go/<click_id>/` redirect view, affiliate URL builder with `ascsubtag`, `ClickEvent` writing.~~
   **Delivered in Phase 8** — the product cards needed a live target. See Phase 8 deviations 1–2.
-- `PageView` middleware with bot filtering and salted session hashing.
-- `UserQuery` write-behind + `mine_query_demand` + `recompute_ctr`.
-- Admin dashboards: clicks by placement/button/position, top queries, zero-result queries,
-  topic performance.
+- ~~`PageView` middleware with bot filtering and salted session hashing.~~ **Delivered.**
+  `apps/tracking/middleware.py` records GET/200/HTML responses only, skipping `/admin/`,
+  `/static/`, `/media/`, `/go/`, `/healthz`, HTMX partials and the usual crawler files.
+- ~~`UserQuery` write-behind~~ → **delivered as a synchronous insert** (deviation 2).
+  `mine_query_demand` and `recompute_ctr` are **deliberately not built yet**: the decision was to
+  record the raw signal now and mine it once there is a meaningful volume. `QueryDemand` therefore
+  still has no write site.
+- ~~Admin dashboards: clicks by placement/button/position, top queries, zero-result queries,
+  topic performance.~~ **Delivered** as the operations panel, which covers those plus worker
+  health, queue depth, pipeline control, cost/budget, catalogue health and a live event feed.
 - **Verify:** clicking each CTA writes a correct `ClickEvent` and lands on the right Amazon page
   with the tag present; `ascsubtag` visible in the final URL.
+
+**Phase 9 deviations**
+
+1. **A custom `AdminSite` replaces the `/admin/` landing page**, against §2's "Django Admin only".
+   The model tables are untouched and still reachable — the panel lists all of them at the bottom,
+   and every `@admin.register` still binds to `admin.site`. New app `apps/ops` holds it:
+   `apps.py` (the `AdminConfig` subclass — it must not import models, since app configs load before
+   the registry is ready), `admin_site.py` (the site, its three extra URLs and the POST action
+   endpoint) and `metrics.py` (every figure on the page; read-only, no models of its own).
+   Templates live in `templates/admin/ops/`, styling in `static/admin/ops.css` written against
+   Django's own admin CSS variables so it follows the light/dark theme. The panel does **not** load
+   `site.css` — Tailwind is for the public site only.
+2. **Queries are recorded synchronously**, not write-behind and not through the job queue. One
+   small insert per search is cheaper than the round trip it would take to defer it, and both
+   `record_query` and the `PageView` middleware swallow their own errors, so tracking can never
+   take a page down.
+3. **`session_key` everywhere is now a salted daily hash**, not the Django session key. See
+   `apps/tracking/session.py`: `HMAC(secret, IP|user-agent)` re-salted every day, truncated to 32
+   chars. No cookie, no stored IP, no stored user agent, and the value stops being linkable after
+   24 hours. `/go/` was writing the raw session key before this and no longer does.
+4. **Search result links carry `uq=<UserQuery id>`**, so a click can be attributed to the query
+   that produced it. That is what makes a CTR-per-query roll-up possible later without changing
+   anything else.
 
 ### Phase 10 — SEO & launch
 - Sitemaps, `robots.txt`, JSON-LD, canonical/OG tags, 301 slug-change handling.

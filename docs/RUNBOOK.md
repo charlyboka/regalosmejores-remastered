@@ -125,14 +125,40 @@ That is exactly what CI runs. There are no unit tests by design — validation i
 |---|---|
 | http://127.0.0.1:8000/ | Home page |
 | http://127.0.0.1:8000/healthz/ | Liveness probe — returns `{"status": "ok"}`, never touches the DB |
-| http://127.0.0.1:8000/admin/ | Django Admin — the entire operations console |
+| http://127.0.0.1:8000/admin/ | **The operations panel** — one screen with the whole system on it. Also the way in to every model table |
 
 ---
 
 ## 5. Monitoring the pipelines
 
-Everything is observed through Django Admin. Replace the host with the production domain when
-looking at the live site.
+### The panel
+
+`/admin/` is no longer the stock list of apps — it is a purpose-built operations panel. **Start
+every investigation here.** It refreshes its activity feed by itself every 15 seconds; everything
+else updates when you reload the page.
+
+| Section | What it tells you |
+|---|---|
+| **Estado del sistema** | Live workers, queue depth, runs and failures in the last 24 h. One dot per worker: green = heartbeat within 5 min, amber = within 15, red = stale. If there are no workers, nothing is running, full stop |
+| **Pipelines** | One row per schedule: cron, last run and its outcome, next run, consecutive failures. Buttons: *Ejecutar* (queue it now), *Pausar* / *Reanudar*, *Reset* (clear the failure counter, which is what un-sticks a schedule that auto-disabled itself) |
+| **Actividad** | Merged feed of pipeline runs and Telegram notifications, newest first. Click any run to open its drill-down |
+| **Coste y presupuesto** | LLM spend today against `LLM_DAILY_BUDGET_USD` with a progress bar, spend by purpose, and the projected Keepa token balance. The projection uses the same arithmetic as the budget guard, so if the bar is red the guard is already refusing work |
+| **Catálogo** | Products by enrichment status, how many are blocked, how many lack an image or facets |
+| **Temas** | Topics by status and how many pass the §9.2 indexability gate (≥12 links, ≥4 categories, ≥3 brands) |
+| **Búsqueda y tráfico** | Top queries, zero-result queries, clicks by placement and button, top pages, and the most recent searches — all over the last 7 days |
+| **Todas las tablas** | The old admin app list, unchanged. Everything below is still reachable |
+
+**Run drill-down** (`/admin/panel/run/<id>/`) shows one run end to end: outcome, duration, counters,
+the full error, the trigger context, every step with its timing, the LLM and Keepa calls it made
+and what they cost, and the last ten runs of the same pipeline for comparison.
+
+The buttons are permission-gated (`pipelines.change_pipelineschedule` / `change_jobqueue`), so a
+read-only staff account can watch the panel but cannot touch anything.
+
+### The model tables
+
+Everything the panel summarises is still available raw. Replace the host with the production
+domain when looking at the live site.
 
 | Admin URL | Use it to |
 |---|---|
@@ -143,12 +169,24 @@ looking at the live site.
 | `/admin/pipelines/llmcall/` | LLM spend, per call and per day, against `LLM_DAILY_BUDGET_USD` |
 | `/admin/pipelines/notificationlog/` | What was sent to Telegram and whether it succeeded |
 | `/admin/pipelines/workerheartbeat/` | **Is the worker alive?** The *Vivo* column goes red if there has been no heartbeat for 15 minutes |
-| `/admin/search/userquery/` | Raw incoming searches |
-| `/admin/search/querydemand/` | Clustered demand — the input to new topic creation |
+| `/admin/search/userquery/` | Raw incoming searches — what was typed, whether it matched a topic, how many results came back, how long it took |
+| `/admin/search/querydemand/` | Clustered demand — the input to new topic creation. **Empty on purpose**: queries are being recorded, but the mining pipeline is not built yet |
 | `/admin/topics/topic/` | Topic status, quality score, indexability |
-| `/admin/tracking/clickevent/` | Outbound affiliate clicks |
+| `/admin/tracking/clickevent/` | Outbound affiliate clicks, attributed to the search that produced them when there was one |
+| `/admin/tracking/pageview/` | Page views, bots flagged and excluded from the panel's figures |
 
 These Admin views are created in Phase 1 and filled in as later phases land.
+
+### What is and is not recorded
+
+No cookies and no personal data. `session_key` on a click, a page view or a query is
+`HMAC(SECRET_KEY, IP|user-agent)` re-salted every day and truncated to 32 characters: it groups a
+visitor's actions within one day and becomes unlinkable after that. The IP and user agent
+themselves are never stored. Bot traffic is flagged rather than dropped, so it can be excluded
+from figures without losing the record.
+
+Tracking can never break a page — both the middleware and the query recorder swallow their own
+errors and log them.
 
 Alerts arrive in the Telegram channel (`TELEGRAM_CHANNEL_ID`). Telegram is the push channel; Admin
 is the pull channel. If Telegram goes quiet, check `notificationlog` before assuming all is well.
