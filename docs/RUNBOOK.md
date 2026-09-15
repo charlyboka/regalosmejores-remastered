@@ -125,40 +125,96 @@ That is exactly what CI runs. There are no unit tests by design — validation i
 |---|---|
 | http://127.0.0.1:8000/ | Home page |
 | http://127.0.0.1:8000/healthz/ | Liveness probe — returns `{"status": "ok"}`, never touches the DB |
-| http://127.0.0.1:8000/admin/ | **The operations panel** — one screen with the whole system on it. Also the way in to every model table |
+| http://127.0.0.1:8000/admin/ | Django Admin — the stock index, with a banner linking to the panel |
+| http://127.0.0.1:8000/admin/panel/ | **The control panel** — six read-only monitoring pages |
 
 ---
 
 ## 5. Monitoring the pipelines
 
-### The panel
+### The control panel
 
-`/admin/` is no longer the stock list of apps — it is a purpose-built operations panel. **Start
-every investigation here.** It refreshes its activity feed by itself every 15 seconds; everything
-else updates when you reload the page.
+`/admin/` is the ordinary Django admin. The banner at the top of it leads to `/admin/panel/`, the
+control panel — six pages that answer *what is happening and is it healthy*. **Start every
+investigation there.**
 
-| Section | What it tells you |
+The panel is **read-only on purpose**: there is not a single button on it. To change something it
+links you to the changelist that owns that action, which is where the actions and the admin log
+already live. Only the activity feed refreshes by itself, every 15 seconds; everything else
+updates when you reload.
+
+| Page | What it answers |
 |---|---|
-| **Estado del sistema** | Live workers, queue depth, runs and failures in the last 24 h. One dot per worker: green = heartbeat within 5 min, amber = within 15, red = stale. If there are no workers, nothing is running, full stop |
-| **Pipelines** | One row per schedule: cron, last run and its outcome, next run, consecutive failures. Buttons: *Ejecutar* (queue it now), *Pausar* / *Reanudar*, *Reset* (clear the failure counter, which is what un-sticks a schedule that auto-disabled itself) |
-| **Actividad** | Merged feed of pipeline runs and Telegram notifications, newest first. Click any run to open its drill-down |
-| **Coste y presupuesto** | LLM spend today against `LLM_DAILY_BUDGET_USD` with a progress bar, spend by purpose, and the projected Keepa token balance. The projection uses the same arithmetic as the budget guard, so if the bar is red the guard is already refusing work |
-| **Catálogo** | Products by enrichment status, how many are blocked, how many lack an image or facets |
-| **Temas** | Topics by status and how many pass the §9.2 indexability gate (≥12 links, ≥4 categories, ≥3 brands) |
-| **Búsqueda y tráfico** | Top queries, zero-result queries, clicks by placement and button, top pages, and the most recent searches — all over the last 7 days |
-| **Todas las tablas** | The old admin app list, unchanged. Everything below is still reachable |
+| **Resumen** `/admin/panel/` | Is anything on fire? **Database capacity first** — space used against the 1 GB of the `essential-0` plan, connections in use against 20, and the biggest tables so you can see what is eating it. Then workers, queue depth, runs and failures in the last 24 h, the live activity feed, and a headline card per area. One dot per worker: green = heartbeat within 5 min, amber = within 15, red = stale. No workers at all means nothing is running, full stop |
+| **Pipelines y trabajos** `/admin/panel/pipelines/` | One row per schedule: cron, last run and its outcome, next run, consecutive failures, how many of its jobs are queued. Then the queue itself — counts by status, backlog per pipeline, **the next twenty jobs in the exact order the worker will claim them**, and the failed ones with their errors. Then the last thirty runs |
+| **Productos** `/admin/panel/productos/` | The catalogue as a funnel: descubiertos → hidratados → enriquecidos → servibles → en algún tema. A big drop between two rows is the stage that is not keeping up. Beside it, what is stuck and why. Below, the most recent arrivals with their thumbnails |
+| **Temas y términos** `/admin/panel/temas/` | **The topic queue**: every topic with the stage it is at, the one thing blocking it, and what will unblock it — plus an *Añadir tema* button. See [§5b](#5b-adding-and-managing-topics). Then the `SearchTerm` queue — **the keywords ingestion will send to Keepa next**, in order |
+| **Búsqueda y tráfico** `/admin/panel/busqueda/` | Last 7 days: visits, visitors, searches, zero-result rate, outbound clicks and CTR, latency, bot traffic. Then top queries, zero-result queries (demand the catalogue does not cover), clicks by placement and button, top pages, and the latest searches |
+| **Coste y presupuesto** `/admin/panel/coste/` | LLM spend today against `LLM_DAILY_BUDGET_USD` with a progress bar, 7- and 30-day spend, spend by purpose, and the projected Keepa token balance. The projection uses the same arithmetic as the budget guard, so if the bar is red the guard is already deferring work. Plus the recent LLM calls and Keepa token movements |
 
-**Run drill-down** (`/admin/panel/run/<id>/`) shows one run end to end: outcome, duration, counters,
-the full error, the trigger context, every step with its timing, the LLM and Keepa calls it made
-and what they cost, and the last ten runs of the same pipeline for comparison.
+Two drill-downs:
 
-The buttons are permission-gated (`pipelines.change_pipelineschedule` / `change_jobqueue`), so a
-read-only staff account can watch the panel but cannot touch anything.
+- **A run** (`/admin/panel/run/<id>/`) — outcome, duration, counters, the full error, the trigger
+  context, every step with its timing, the LLM and Keepa calls it made and what they cost, and the
+  last ten runs of the same pipeline for comparison.
+- **A product** (`/admin/panel/producto/<id>/`) — image, identifiers, enrichment and hydration
+  state, quality and CTR scores, its LLM-generated facets (and whether each has an embedding), the
+  topics it appears on with its rank and score, and its recent outbound clicks. Never shows a
+  price.
+
+The database gauge also rides in the banner on `/admin/`, so capacity is visible without opening
+the panel. It is read live from Postgres (`pg_database_size`, `pg_stat_activity`,
+`pg_stat_user_tables`); the plan limits are constants in `apps/ops/metrics.py` and must be changed
+there if the Heroku plan changes.
+
+### 5b. Adding and managing topics
+
+A topic is a landing page — *regalos para aniversario de bodas*. **`/admin/topics/topic/` is the
+tab that owns them**, and `/admin/panel/temas/` is the read-only view of the same queue with the
+*Añadir tema* button on it.
+
+To add one, fill in only the first two sections of the form:
+
+1. **Título** (and the slug it proposes), **tipo**, **estado** and **prioridad**. Higher priority
+   is processed first.
+2. **Para quién y para qué** — recipients, occasions, interests, price band. These decide which
+   products are searched for *and* act as hard filters when linking them, so they matter more than
+   the wording of the title.
+
+Leave *Semántica* alone: `canonical_text` and the embedding are computed on the first curation.
+
+What happens next, and what each stage is called in the panel:
+
+| Stage | Waiting on | When |
+|---|---|---|
+| Sin descomponer | `decompose_topic` turns the topic into Amazon search terms | 04:00 |
+| Buscando productos | `run_search_terms` sends those terms to Keepa | every 4 h |
+| Sin curar | `curate_topics` links products and applies the §9.2 gate | 05:00 |
+| Por debajo de la puerta | you — the panel names the missing piece | — |
+| Publicable | nothing; it is indexable | — |
+
+The **Qué le falta** column is `TopicQualityGate.evaluate()`, the same check the curator runs, so
+it never disagrees with reality. A topic needs ≥12 linked products, ≥4 categories, ≥3 brands, an
+`intro_html`, and `human_reviewed` before it is indexable. Products discovered in between still
+have to be hydrated and enriched by their own pipelines before they can be linked, so a topic
+often needs a second curation.
+
+To skip the overnight wait, select topics in `/admin/topics/topic/` and run the **Procesar ahora**
+action: it enqueues `decompose_topic`, `run_search_terms` and `curate_topics` at top priority,
+scoped to those topics via a `topic_ids` payload, in that order. The same payload works from the
+command line:
+
+```powershell
+uv run python manage.py run_pipeline curate_topics --payload '{"topic_ids": [12]}'
+```
+
+Targeting by id implies `force` for `curate_topics` — asking for a topic by name means now, not
+"if it happens to be stale".
 
 ### The model tables
 
-Everything the panel summarises is still available raw. Replace the host with the production
-domain when looking at the live site.
+Everything the panel summarises is available raw, and this is where you go to change things.
+Replace the host with the production domain when looking at the live site.
 
 | Admin URL | Use it to |
 |---|---|
@@ -171,7 +227,7 @@ domain when looking at the live site.
 | `/admin/pipelines/workerheartbeat/` | **Is the worker alive?** The *Vivo* column goes red if there has been no heartbeat for 15 minutes |
 | `/admin/search/userquery/` | Raw incoming searches — what was typed, whether it matched a topic, how many results came back, how long it took |
 | `/admin/search/querydemand/` | Clustered demand — the input to new topic creation. **Empty on purpose**: queries are being recorded, but the mining pipeline is not built yet |
-| `/admin/topics/topic/` | Topic status, quality score, indexability |
+| `/admin/topics/topic/` | **Create and edit topics.** Status, priority, facets, the intro, the quality counters and the *Qué le falta* column. Actions: *Procesar ahora*, mark reviewed, activate, archive |
 | `/admin/tracking/clickevent/` | Outbound affiliate clicks, attributed to the search that produced them when there was one |
 | `/admin/tracking/pageview/` | Page views, bots flagged and excluded from the panel's figures |
 

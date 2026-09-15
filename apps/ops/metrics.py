@@ -15,7 +15,9 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.conf import settings
+from django.db import connection
 from django.db.models import Avg, Count, Q, Sum
+from django.template.defaultfilters import filesizeformat
 from django.utils import timezone
 
 from apps.catalog.models import EnrichmentStatus, Product, ProductFacet
@@ -31,7 +33,7 @@ from apps.pipelines.models import (
     WorkerHeartbeat,
 )
 from apps.search.models import UserQuery
-from apps.topics.models import Topic, TopicStatus
+from apps.topics.models import SearchTerm, SearchTermStatus, Topic, TopicStatus
 from apps.tracking.models import ClickEvent, PageView
 
 #: A run slower than this is worth a second look, not an alarm.
@@ -46,6 +48,87 @@ class Stat:
     value: str
     detail: str = ""
     tone: str = "neutral"  # neutral | good | warn | bad
+
+
+# --- database capacity ---------------------------------------------------------------------
+
+#: Heroku Postgres `essential-0`: 1 GB of storage and 20 connections. Hard-coded rather than
+#: configured because changing plan is a deploy-level event, not a runtime setting — but the
+#: connection limit is read from the role first, since Heroku enforces it there.
+DB_SIZE_LIMIT_BYTES = 1024**3
+DB_CONNECTION_LIMIT = 20
+
+
+def database_capacity() -> dict:
+    """How much of the Postgres plan is used, straight from the server.
+
+    Three catalogue queries, no table scans: `pg_database_size` and `pg_stat_*` are all
+    bookkeeping the server already maintains, so this is cheap enough to run on every page load.
+    """
+    with connection.cursor() as cur:
+        cur.execute("SELECT pg_database_size(current_database())")
+        used = cur.fetchone()[0]
+
+        cur.execute("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()")
+        connections = cur.fetchone()[0]
+
+        # Heroku enforces the plan's connection cap on the role, so ask the role first; a local
+        # or self-hosted server reports -1 (unlimited) and falls back to the plan constant.
+        cur.execute("SELECT rolconnlimit FROM pg_roles WHERE rolname = current_user")
+        role_limit = cur.fetchone()[0]
+
+        cur.execute(
+            "SELECT relname, pg_total_relation_size(relid), n_live_tup "
+            "FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 8"
+        )
+        tables = cur.fetchall()
+
+    conn_limit = role_limit if role_limit > 0 else DB_CONNECTION_LIMIT
+    used_pct = round(used / DB_SIZE_LIMIT_BYTES * 100, 1)
+    conn_pct = round(connections / conn_limit * 100)
+    largest = max((size for _, size, _ in tables), default=1) or 1
+
+    return {
+        "used_pct": used_pct,
+        "tone": _capacity_tone(used_pct),
+        "summary": f"{filesizeformat(used)} de {filesizeformat(DB_SIZE_LIMIT_BYTES)} ({used_pct}%)",
+        "stats": [
+            Stat(
+                "Espacio usado",
+                f"{used_pct}%",
+                f"{filesizeformat(used)} de {filesizeformat(DB_SIZE_LIMIT_BYTES)}",
+                tone=_capacity_tone(used_pct),
+            ),
+            Stat(
+                "Conexiones",
+                f"{connections} / {conn_limit}",
+                "el worker y la web comparten el mismo cupo",
+                tone=_capacity_tone(conn_pct),
+            ),
+            Stat(
+                "Margen",
+                filesizeformat(max(DB_SIZE_LIMIT_BYTES - used, 0)),
+                "plan essential-0",
+            ),
+        ],
+        "tables": [
+            {
+                "name": name,
+                "size": filesizeformat(size),
+                "rows": rows,
+                "pct": round(size / largest * 100),
+            }
+            for name, size, rows in tables
+        ],
+    }
+
+
+def _capacity_tone(pct: float) -> str:
+    if pct >= 90:
+        return "bad"
+    if pct >= 75:
+        return "warn"
+    return "good"
 
 
 # --- workers and queue ---------------------------------------------------------------------
@@ -427,6 +510,351 @@ def traffic_panel(days: int = 7) -> dict:
             .order_by("-n")[:10]
         ),
     }
+
+
+# --- the job queue, in detail ----------------------------------------------------------------
+
+
+def job_queue_panel() -> dict:
+    """What the worker is about to do, and what it gave up on.
+
+    ``upcoming`` is ordered exactly like ``JobQueue.Meta.ordering``, which is the order the
+    worker claims in, so the list really is the next few jobs and not an approximation.
+    """
+    by_status = dict(
+        JobQueue.objects.values_list("status").annotate(n=Count("id")).values_list("status", "n")
+    )
+    return {
+        "by_status": [
+            {"label": JobStatus(key).label, "key": key, "count": value}
+            for key, value in sorted(by_status.items())
+            if key in JobStatus.values
+        ],
+        "by_pipeline": list(
+            JobQueue.objects.filter(
+                status__in=[JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.DEFERRED]
+            )
+            .values("pipeline_key")
+            .annotate(n=Count("id"))
+            .order_by("-n")
+        ),
+        "upcoming": list(
+            JobQueue.objects.filter(status=JobStatus.QUEUED).order_by("priority", "available_at")[
+                :20
+            ]
+        ),
+        "failed": list(
+            JobQueue.objects.filter(status=JobStatus.FAILED).order_by("-updated_at")[:15]
+        ),
+    }
+
+
+def recent_runs(limit: int = 30) -> list[dict]:
+    return [
+        {"run": run, "tone": run_tone(run)}
+        for run in PipelineRun.objects.order_by("-started_at")[:limit]
+    ]
+
+
+# --- the catalogue, in detail ----------------------------------------------------------------
+
+
+def product_funnel() -> dict:
+    """Every product is somewhere along stub -> hidratado -> enriquecido -> en un tema.
+
+    Reading it top to bottom tells you where the catalogue is jammed: a wide gap between two
+    rows is the stage that is not keeping up.
+    """
+    agg = Product.objects.aggregate(
+        total=Count("id"),
+        hydrated=Count("id", filter=Q(keepa_fetched_at__isnull=False)),
+        enriched=Count("id", filter=Q(enrichment_status=EnrichmentStatus.DONE)),
+        # Deliberately narrower than is_active alone: is_active defaults to True, so a bare stub
+        # would otherwise count as servable and the funnel would end wider than it started.
+        servable=Count(
+            "id",
+            filter=Q(
+                is_active=True,
+                is_blocked=False,
+                keepa_fetched_at__isnull=False,
+                enrichment_status=EnrichmentStatus.DONE,
+            ),
+        ),
+    )
+    linked = Product.objects.filter(topic_links__is_excluded=False).distinct().count()
+    total = agg["total"] or 0
+
+    def step(label: str, count: int, detail: str) -> dict:
+        return {
+            "label": label,
+            "count": count,
+            "detail": detail,
+            "pct": int(count / total * 100) if total else 0,
+        }
+
+    return {
+        "total": total,
+        "steps": [
+            step("Descubiertos", total, "vistos alguna vez por seed_products o run_search_terms"),
+            step("Hidratados", agg["hydrated"], "con datos completos de Keepa"),
+            step("Enriquecidos", agg["enriched"], "con facetas generadas por el LLM"),
+            step("Servibles", agg["servable"], "enriquecidos, activos y no bloqueados"),
+            step("En algun tema", linked, "aparecen en al menos una pagina de tema"),
+        ],
+    }
+
+
+def recent_products(limit: int = 24) -> list[Product]:
+    return list(Product.objects.order_by("-first_seen_at")[:limit])
+
+
+def stuck_products() -> list[dict]:
+    """Products that are not moving, grouped by why, newest first within each group.
+
+    The 24 h cut-off is deliberate: hydration runs every 5 minutes and enrichment every 15, so
+    anything still waiting a day later is stuck rather than merely queued.
+    """
+    cutoff = timezone.now() - timedelta(hours=24)
+    groups = [
+        (
+            "Enriquecimiento fallido",
+            "bad",
+            Product.objects.filter(enrichment_status=EnrichmentStatus.FAILED),
+        ),
+        (
+            "Esperando hidratacion > 24 h",
+            "warn",
+            Product.objects.filter(keepa_fetched_at__isnull=True, first_seen_at__lt=cutoff),
+        ),
+        (
+            "Hidratados sin enriquecer > 24 h",
+            "warn",
+            Product.objects.filter(
+                keepa_fetched_at__lt=cutoff, enrichment_status=EnrichmentStatus.PENDING
+            ),
+        ),
+        (
+            "Enriquecidos sin facetas",
+            "warn",
+            Product.objects.filter(
+                enrichment_status=EnrichmentStatus.DONE, facets__isnull=True
+            ).distinct(),
+        ),
+        (
+            "Hidratados sin imagen",
+            "warn",
+            # Only hydrated ones: a stub has no image yet because nobody has fetched it.
+            Product.objects.filter(keepa_fetched_at__isnull=False, is_blocked=False, image_urls=[]),
+        ),
+        ("Bloqueados a mano", "neutral", Product.objects.filter(is_blocked=True)),
+    ]
+    return [
+        {
+            "label": label,
+            "tone": tone,
+            "count": queryset.count(),
+            "examples": list(queryset.order_by("-first_seen_at")[:5]),
+        }
+        for label, tone, queryset in groups
+    ]
+
+
+def product_detail(product: Product) -> dict:
+    """One product end to end. Deliberately never shows ``price_cents`` — see blueprint §1."""
+    clicks = ClickEvent.objects.filter(product=product)
+    return {
+        "stats": [
+            Stat(
+                "Enriquecimiento",
+                product.get_enrichment_status_display(),
+                _age_phrase(product.enriched_at) if product.enriched_at else "nunca",
+                tone="good"
+                if product.enrichment_status == EnrichmentStatus.DONE
+                else "bad"
+                if product.enrichment_status == EnrichmentStatus.FAILED
+                else "warn",
+            ),
+            Stat(
+                "Keepa",
+                "hidratado" if product.keepa_fetched_at else "sin hidratar",
+                _age_phrase(product.keepa_fetched_at),
+                tone="good" if product.keepa_fetched_at else "warn",
+            ),
+            Stat("Calidad", f"{product.quality_score:.3f}", f"CTR {product.ctr_score:.3f}"),
+            Stat(
+                "Valoracion",
+                f"{product.rating}" if product.rating else "—",
+                f"{product.review_count or 0} resenas",
+            ),
+            Stat(
+                "Estado",
+                "bloqueado"
+                if product.is_blocked
+                else "activo"
+                if product.is_active
+                else "inactivo",
+                product.block_reason or product.availability_note,
+                tone="bad" if product.is_blocked or not product.is_active else "good",
+            ),
+            Stat("Clics salientes", str(clicks.count())),
+        ],
+        "facets": list(product.facets.order_by("facet_type", "-weight")),
+        "links": list(product.topic_links.select_related("topic").order_by("rank")[:30]),
+        "clicks": list(clicks.select_related("topic").order_by("-created_at")[:15]),
+    }
+
+
+# --- what the pipelines will search for next --------------------------------------------------
+
+
+def search_term_queue() -> dict:
+    """The keywords ingestion will send to Keepa, in the order it will send them.
+
+    ``upcoming`` repeats the ordering in ``RunSearchTermsPipeline`` on purpose: if the two ever
+    disagree the panel is lying about what happens next.
+    """
+    by_status = dict(
+        SearchTerm.objects.values_list("status").annotate(n=Count("id")).values_list("status", "n")
+    )
+    pending = by_status.get(SearchTermStatus.PENDING, 0)
+    failed = by_status.get(SearchTermStatus.FAILED, 0)
+
+    # A topic with no terms at all is waiting on decompose_topic, not on Keepa.
+    awaiting_decompose = Topic.objects.filter(
+        status__in=[TopicStatus.DRAFT, TopicStatus.ACTIVE],
+        merged_into__isnull=True,
+        search_terms__isnull=True,
+    ).count()
+
+    return {
+        "stats": [
+            Stat(
+                "Terminos pendientes",
+                str(pending),
+                "se lanzan cada 4 h, 10 por vez",
+                tone="neutral" if pending else "warn",
+            ),
+            Stat("Completados", str(by_status.get(SearchTermStatus.DONE, 0))),
+            Stat(
+                "Agotados",
+                str(by_status.get(SearchTermStatus.EXHAUSTED, 0)),
+                "Keepa ya no devuelve nada nuevo",
+            ),
+            Stat("Fallidos", str(failed), tone="bad" if failed else "good"),
+            Stat(
+                "Temas sin descomponer",
+                str(awaiting_decompose),
+                "esperan a decompose_topic (04:00)",
+                tone="warn" if awaiting_decompose else "good",
+            ),
+        ],
+        "upcoming": list(
+            SearchTerm.objects.filter(status=SearchTermStatus.PENDING)
+            .select_related("topic")
+            .order_by("-priority", "-topic__priority", "id")[:20]
+        ),
+        "recent": list(
+            SearchTerm.objects.filter(last_run_at__isnull=False)
+            .select_related("topic")
+            .order_by("-last_run_at")[:15]
+        ),
+        "failed": list(
+            SearchTerm.objects.filter(status=SearchTermStatus.FAILED)
+            .select_related("topic")
+            .order_by("-last_run_at")[:10]
+        ),
+    }
+
+
+def topic_board() -> dict:
+    """Every live topic with the one thing that is currently holding it back.
+
+    The blocking reason comes from `TopicQualityGate.evaluate`, the same object `curate_topics`
+    uses, so the panel can never disagree with the curator about why a page is not indexable.
+    Looping in Python is deliberate here: there are dozens of topics, not thousands, and the
+    stage depends on three unrelated conditions that no single query expresses honestly.
+    """
+    from apps.topics.services import TopicQualityGate
+
+    gate = TopicQualityGate()
+    topics = (
+        Topic.objects.filter(merged_into__isnull=True)
+        .annotate(
+            terms=Count("search_terms", distinct=True),
+            terms_pending=Count(
+                "search_terms",
+                filter=Q(search_terms__status=SearchTermStatus.PENDING),
+                distinct=True,
+            ),
+        )
+        .order_by("-priority", "title")
+    )
+
+    rows = []
+    stage_counts: dict[str, int] = {}
+    for topic in topics:
+        stage, tone, blocking, next_step = _topic_stage(topic, gate)
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+        rows.append(
+            {
+                "topic": topic,
+                "stage": stage,
+                "tone": tone,
+                "blocking": blocking,
+                "next_step": next_step,
+            }
+        )
+
+    return {
+        "rows": rows,
+        "stages": [
+            {"label": label, "count": stage_counts.get(label, 0), "tone": tone}
+            for label, tone in TOPIC_STAGES
+        ],
+        "by_source": list(Topic.objects.values("source").annotate(n=Count("id")).order_by("-n")),
+    }
+
+
+#: Stage labels in lifecycle order, with the colour each one deserves in the panel.
+TOPIC_STAGES = [
+    ("Sin descomponer", "warn"),
+    ("Buscando productos", "info"),
+    ("Sin curar", "info"),
+    ("Por debajo de la puerta", "warn"),
+    ("Publicable", "good"),
+    ("Archivado", "neutral"),
+]
+
+
+def _topic_stage(topic: Topic, gate) -> tuple[str, str, str, str]:
+    """(stage, tone, what is blocking it, what will unblock it)."""
+    if topic.status == TopicStatus.ARCHIVED:
+        return "Archivado", "neutral", "", "Reactívalo para volver a la cola"
+    if not topic.terms:
+        return (
+            "Sin descomponer",
+            "warn",
+            "Sin términos de búsqueda",
+            "decompose_topic (04:00) o «Procesar ahora»",
+        )
+    if topic.terms_pending:
+        return (
+            "Buscando productos",
+            "info",
+            f"{topic.terms_pending} de {topic.terms} términos pendientes",
+            "run_search_terms (cada 4 h)",
+        )
+    if topic.last_curated_at is None:
+        return "Sin curar", "info", "Nunca curado", "curate_topics (05:00) o «Procesar ahora»"
+
+    reason = gate.evaluate(topic)
+    if not reason:
+        return "Publicable", "good", "", "Ya indexable" if topic.is_indexable else "Vuelve a curar"
+    if reason == "Falta la introducción":
+        return "Por debajo de la puerta", "warn", reason, "Escribe la introducción en el tema"
+    if reason == "Pendiente de revisión humana":
+        return "Por debajo de la puerta", "warn", reason, "Marca «revisado a mano»"
+    return "Por debajo de la puerta", "warn", reason, "Necesita más productos enlazados"
 
 
 # --- event feed ----------------------------------------------------------------------------

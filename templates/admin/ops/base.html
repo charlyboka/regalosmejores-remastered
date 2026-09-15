@@ -1,0 +1,39 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% comment %}
+Shared chrome for every control-panel page: the stylesheet, HTMX, breadcrumbs and the sub-nav.
+Each page fills {% block panel %}.
+
+The panel is read-only by design — there is not a single form in here. Anything you want to
+change is one click away in the normal changelist, which already has the actions and the audit
+trail for it.
+{% endcomment %}
+
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'admin/ops.css' %}">{% endblock %}
+{% block extrahead %}{{ block.super }}<script src="{% static 'js/htmx.min.js' %}" defer></script>{% endblock %}
+{% block bodyclass %}{{ block.super }} ops{% endblock %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Inicio</a>
+    &rsaquo; <a href="{% url 'admin:ops_panel' %}">Panel de control</a>
+    {% block panel_breadcrumb %}&rsaquo; {{ title }}{% endblock %}
+  </div>
+{% endblock %}
+
+{% block content %}
+<div class="ops">
+
+  <nav class="ops-nav">
+    {% for name, label in panel_nav %}
+      <a href="{% url 'admin:'|add:name %}"
+         class="{% if request.resolver_match.url_name == name %}is-current{% endif %}">{{ label }}</a>
+    {% endfor %}
+    <span class="ops-nav-clock ops-muted">{{ now|date:"d/m/Y H:i" }} UTC</span>
+  </nav>
+
+  {% block panel %}{% endblock %}
+
+</div>
+{% endblock %}

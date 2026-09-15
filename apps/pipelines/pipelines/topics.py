@@ -63,6 +63,12 @@ class CurateTopicsPipeline(Pipeline):
             statuses.append(TopicStatus.DRAFT)
 
         qs = Topic.objects.filter(status__in=statuses, merged_into__isnull=True)
+
+        # Targeting specific topics implies `force`: an operator who asked for these topics by id
+        # means now, not "if they happen to be stale".
+        if topic_ids := ctx.option("topic_ids"):
+            return qs.filter(id__in=topic_ids).order_by("-priority", "id")
+
         if not ctx.option("force", False):
             cutoff = timezone.now() - timedelta(days=services.RECURATE_AFTER_DAYS)
             qs = qs.filter(Q(last_curated_at__isnull=True) | Q(last_curated_at__lt=cutoff))
@@ -152,6 +158,8 @@ class DecomposeTopicPipeline(Pipeline):
 
     def select(self, ctx: PipelineContext):
         qs = Topic.objects.filter(merged_into__isnull=True).exclude(status=TopicStatus.ARCHIVED)
+        if topic_ids := ctx.option("topic_ids"):
+            qs = qs.filter(id__in=topic_ids)
         if not ctx.option("redecompose", False):
             qs = qs.filter(search_terms__isnull=True)
         return qs.order_by("-priority", "id").distinct()

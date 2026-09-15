@@ -230,11 +230,10 @@ class RunSearchTermsPipeline(Pipeline):
         statuses = [SearchTermStatus.PENDING]
         if ctx.option("rerun_done", False):
             statuses.append(SearchTermStatus.DONE)
-        return (
-            SearchTerm.objects.filter(status__in=statuses)
-            .select_related("topic")
-            .order_by("-priority", "-topic__priority", "id")
-        )
+        qs = SearchTerm.objects.filter(status__in=statuses)
+        if topic_ids := ctx.option("topic_ids"):
+            qs = qs.filter(topic_id__in=topic_ids)
+        return qs.select_related("topic").order_by("-priority", "-topic__priority", "id")
 
     def run(self, ctx: PipelineContext) -> PipelineResult:
         terms = list(self.select(ctx)[: ctx.max_items])

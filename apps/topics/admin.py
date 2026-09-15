@@ -1,7 +1,22 @@
 from django.contrib import admin
 from django.utils.html import format_html
 
+from apps.pipelines.queue import enqueue
+
 from .models import ProductTopicLink, SearchTerm, Topic, TopicAlias, TopicStatus
+from .services import TopicQualityGate
+
+#: The same gate `curate_topics` applies, so the changelist and the curator can never disagree
+#: about why a topic is not indexable.
+GATE = TopicQualityGate()
+
+LIFECYCLE_HELP = (
+    "Un tema recién creado recorre este camino: <b>decompose_topic</b> (04:00) lo convierte en "
+    "términos de búsqueda de Amazon, <b>run_search_terms</b> (cada 4 h) trae productos "
+    "candidatos, la hidratación y el enriquecimiento los completan, y <b>curate_topics</b> "
+    "(05:00) los enlaza y aplica la puerta de calidad. Para no esperar, usa la acción "
+    "<b>Procesar ahora</b> desde el listado."
+)
 
 
 class TopicAliasInline(admin.TabularInline):
@@ -31,16 +46,14 @@ class ProductTopicLinkInline(admin.TabularInline):
 class TopicAdmin(admin.ModelAdmin):
     list_display = (
         "title",
-        "slug",
         "kind",
         "status",
         "priority",
         "linked_count",
         "distinct_categories",
         "distinct_brands",
-        "quality_score",
         "is_indexable",
-        "human_reviewed",
+        "blocking",
         "last_curated_at",
     )
     list_filter = ("status", "kind", "source", "is_indexable", "human_reviewed", "price_band")
@@ -57,31 +70,57 @@ class TopicAdmin(admin.ModelAdmin):
         "distinct_brands",
         "quality_score",
         "is_indexable",
+        "blocking",
         "last_curated_at",
         "created_at",
         "updated_at",
         "public_link",
     )
     fieldsets = (
-        (None, {"fields": ("title", "slug", "public_link", "kind", "status", "priority")}),
-        ("SEO", {"fields": ("meta_title", "meta_description", "intro_html")}),
+        (
+            None,
+            {
+                "fields": ("title", "slug", "public_link", "kind", "status", "priority"),
+                "description": LIFECYCLE_HELP,
+            },
+        ),
+        (
+            "Para quién y para qué",
+            {
+                "fields": ("recipients", "occasions", "interests", "price_band"),
+                "description": (
+                    "Estas facetas deciden qué productos se buscan y actúan como filtro duro al "
+                    "enlazarlos. Para «regalos para aniversario de bodas»: ocasión "
+                    "<code>aniversario</code>, destinatario <code>pareja</code>."
+                ),
+            },
+        ),
+        (
+            "SEO",
+            {
+                "fields": ("meta_title", "meta_description", "intro_html"),
+                "description": (
+                    "La introducción es obligatoria para que el tema sea indexable. Los otros dos "
+                    "son opcionales: sin ellos se usan el título y un resumen."
+                ),
+            },
+        ),
         (
             "Semántica",
             {
-                "fields": (
-                    "canonical_text",
-                    "embedding_version",
-                    "occasions",
-                    "recipients",
-                    "interests",
-                    "price_band",
-                )
+                "classes": ("collapse",),
+                "fields": ("canonical_text", "embedding_version"),
+                "description": (
+                    "Se calculan solos en la primera curación, a partir del título y las facetas. "
+                    "Déjalos en blanco salvo que quieras forzar una redacción concreta."
+                ),
             },
         ),
         (
             "Calidad",
             {
                 "fields": (
+                    "blocking",
                     "linked_count",
                     "distinct_categories",
                     "distinct_brands",
@@ -106,7 +145,7 @@ class TopicAdmin(admin.ModelAdmin):
             },
         ),
     )
-    actions = ("mark_human_reviewed", "activate_topics", "archive_topics")
+    actions = ("process_now", "mark_human_reviewed", "activate_topics", "archive_topics")
 
     @admin.display(description="URL pública")
     def public_link(self, obj: Topic):
@@ -114,6 +153,33 @@ class TopicAdmin(admin.ModelAdmin):
             return "—"
         url = obj.get_absolute_url()
         return format_html('<a href="{}" target="_blank">{}</a>', url, url)
+
+    @admin.display(description="Qué le falta")
+    def blocking(self, obj: Topic):
+        if not obj.pk:
+            return "—"
+        reason = GATE.evaluate(obj)
+        if not reason:
+            return format_html('<b style="color:var(--object-tools-bg,#417690)">Cumple</b>')
+        return format_html('<span style="color:#b35c00">{}</span>', reason)
+
+    @admin.action(description="Procesar ahora (descomponer, buscar productos y curar)")
+    def process_now(self, request, queryset):
+        """Jump the queue for the selected topics instead of waiting for tomorrow's cron.
+
+        The three jobs are enqueued at top priority in dependency order; the single worker runs
+        them one at a time, so terms exist before Keepa is asked and products exist before they
+        are linked.
+        """
+        topic_ids = list(queryset.values_list("id", flat=True))
+        for priority, key in enumerate(("decompose_topic", "run_search_terms", "curate_topics"), 1):
+            enqueue(key, {"topic_ids": topic_ids}, priority=priority)
+        self.message_user(
+            request,
+            f"{len(topic_ids)} temas encolados. Los productos recién descubiertos aún deben "
+            "hidratarse y enriquecerse antes de poder enlazarse, así que puede hacer falta una "
+            "segunda curación.",
+        )
 
     @admin.action(description="Marcar como revisado por humano")
     def mark_human_reviewed(self, request, queryset):

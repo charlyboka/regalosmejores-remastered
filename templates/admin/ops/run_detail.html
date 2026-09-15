@@ -1,30 +1,18 @@
-{% extends "admin/base_site.html" %}
-{% load static %}
+{% extends "admin/ops/base.html" %}
 
-{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'admin/ops.css' %}">{% endblock %}
-
-{% block breadcrumbs %}
-  <div class="breadcrumbs">
-    <a href="{% url 'admin:index' %}">Panel</a>
-    &rsaquo; <a href="{% url 'admin:pipelines_pipelinerun_changelist' %}">Ejecuciones</a>
-    &rsaquo; #{{ run.pk }}
-  </div>
+{% block panel_breadcrumb %}
+  &rsaquo; <a href="{% url 'admin:ops_pipelines' %}">Pipelines</a>
+  &rsaquo; #{{ run.pk }}
 {% endblock %}
 
-{% block content %}
-<div class="ops">
+{% block panel %}
 
   <section class="ops-section">
     <div class="ops-head">
       <h2><span class="ops-dot tone-{{ tone }}"></span> {{ run.pipeline_key }} <span class="ops-muted">#{{ run.pk }}</span></h2>
-      <form method="post" action="{% url 'admin:ops_action' %}" class="ops-inline">
-        {% csrf_token %}
-        <input type="hidden" name="next" value="{{ request.path }}">
-        {% if run.job_id %}
-          <input type="hidden" name="id" value="{{ run.job_id }}">
-          <button type="submit" name="action" value="retry_job" class="ops-btn">Reintentar este trabajo</button>
-        {% endif %}
-      </form>
+      {% if run.job_id %}
+        <a href="{% url 'admin:pipelines_jobqueue_change' run.job_id %}" class="ops-muted">trabajo #{{ run.job_id }} &rsaquo;</a>
+      {% endif %}
     </div>
 
     <div class="ops-stats">
@@ -146,5 +134,4 @@
     </ul>
   </section>
 
-</div>
 {% endblock %}

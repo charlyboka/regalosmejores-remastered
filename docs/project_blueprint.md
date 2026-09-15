@@ -42,7 +42,7 @@ visually appealing grid of gift cards. Every card exposes several Amazon CTAs
 | Hosting | Heroku EU, app `regalosmejores`, stack `heroku-24`, dynos `web:1` + `worker:1` (Basic) |
 | CDN/DNS | Cloudflare (proxied) in front of Heroku |
 | Styling | Tailwind via the **standalone CLI binary** (no Node buildpack) |
-| Admin/dashboards | **Django Admin only** — customised ModelAdmins, list filters, admin actions, plus one custom `AdminSite` whose index is the operations panel (§Phase 9 deviation 1) |
+| Admin/dashboards | **Django Admin only** — customised ModelAdmins, list filters, admin actions, plus a read-only control panel at `/admin/panel/` (§Phase 9 deviations 1–2) |
 | Analytics | First-party `UserQuery` + `ClickEvent` tables + Google Search Console. **No GA4, no cookie banner** in v1 |
 | LLM | OpenAI `gpt-5.6-luna` (default, overridable per call) |
 | Embeddings | OpenAI `text-embedding-3-small`, `dimensions=512` |
@@ -1392,19 +1392,20 @@ snippet is in the runbook for re-running it.
 
 **Phase 9 deviations**
 
-1. **A custom `AdminSite` replaces the `/admin/` landing page**, against §2's "Django Admin only".
-   The model tables are untouched and still reachable — the panel lists all of them at the bottom,
-   and every `@admin.register` still binds to `admin.site`. New app `apps/ops` holds it:
-   `apps.py` (the `AdminConfig` subclass — it must not import models, since app configs load before
-   the registry is ready), `admin_site.py` (the site, its three extra URLs and the POST action
-   endpoint) and `metrics.py` (every figure on the page; read-only, no models of its own).
-   Templates live in `templates/admin/ops/`, styling in `static/admin/ops.css` written against
-   Django's own admin CSS variables so it follows the light/dark theme. The panel does **not** load
-   `site.css` — Tailwind is for the public site only.
-2. **Queries are recorded synchronously**, not write-behind and not through the job queue. One
-   small insert per search is cheaper than the round trip it would take to defer it, and both
-   `record_query` and the `PageView` middleware swallow their own errors, so tracking can never
-   take a page down.
+1. **A custom `AdminSite` adds a control panel at `/admin/panel/`**, against §2's "Django Admin
+   only". `/admin/` itself is still the stock index — the app and model list, unchanged — with one
+   banner linking to the panel. New app `apps/ops` holds it: `apps.py` (the `AdminConfig` subclass
+   — it must not import models, since app configs load before the registry is ready),
+   `admin_site.py` (the site and its nine extra URLs) and `metrics.py` (every figure on the pages;
+   read-only, no models of its own). Templates live in `templates/admin/ops/`, styling in
+   `static/admin/ops.css` written against Django's own admin CSS variables so it follows the
+   light/dark theme. The panel does **not** load `site.css` — Tailwind is for the public site only.
+   The panel has six pages: Resumen, Pipelines y trabajos, Productos (with a per-product
+   drill-down), Temas y términos, Búsqueda y tráfico, Coste y presupuesto, plus a per-run
+   drill-down.
+2. **The panel is strictly read-only.** Not one form, not one POST route — every page links to the
+   changelist that already owns the corresponding action, so there is exactly one place where each
+   mutation lives and the admin log keeps recording it.
 3. **`session_key` everywhere is now a salted daily hash**, not the Django session key. See
    `apps/tracking/session.py`: `HMAC(secret, IP|user-agent)` re-salted every day, truncated to 32
    chars. No cookie, no stored IP, no stored user agent, and the value stops being linkable after
@@ -1412,6 +1413,22 @@ snippet is in the runbook for re-running it.
 4. **Search result links carry `uq=<UserQuery id>`**, so a click can be attributed to the query
    that produced it. That is what makes a CTR-per-query roll-up possible later without changing
    anything else.
+5. **Queries are recorded synchronously**, not write-behind and not through the job queue. One
+   small insert per search is cheaper than the round trip it would take to defer it, and both
+   `record_query` and the `PageView` middleware swallow their own errors, so tracking can never
+   take a page down.
+6. **Database capacity is read live from Postgres** (`pg_database_size`, `pg_stat_activity`,
+   `pg_stat_user_tables`) and shown both at the top of the Resumen page and in the banner on
+   `/admin/`. The `essential-0` limits — 1 GB, 20 connections — are constants in `metrics.py`; the
+   connection cap is read from `pg_roles.rolconnlimit` first, since that is where Heroku enforces
+   it. This is the early-warning system for the catalogue ceiling described in Phase 11.
+7. **Topic management got a lifecycle, not a new screen.** `/admin/topics/topic/` remains the
+   place topics are created and edited, but the §9.2 gate reason is now a column (*Qué le falta*)
+   and a read-only field, the form is ordered around the facets that actually drive retrieval,
+   and the panel shows every topic with its stage and what will unblock it. `decompose_topic`,
+   `run_search_terms` and `curate_topics` accept a `topic_ids` payload so the **Procesar ahora**
+   action can push one topic through immediately instead of waiting for the overnight cron; for
+   `curate_topics`, targeting by id implies `force`.
 
 ### Phase 10 — SEO & launch
 - Sitemaps, `robots.txt`, JSON-LD, canonical/OG tags, 301 slug-change handling.

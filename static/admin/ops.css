@@ -98,25 +98,123 @@
 .ops-pipeline-main { min-width: 0; }
 .ops-pipeline-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; }
 .ops-pipeline-meta { margin-top: 3px; }
-.ops-pipeline-actions form { display: flex; gap: 6px; }
 .ops-cron { font-size: 11px; color: var(--body-quiet-color, #666); background: var(--darkened-bg, #f0f0f0); padding: 1px 5px; border-radius: 3px; }
 
-/* --- buttons --------------------------------------------------------------- */
+/* --- banner on the ordinary admin index ------------------------------------ */
 
-.ops-btn {
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 5px;
-  border: 1px solid transparent;
-  background: var(--button-bg, #417690);
-  color: var(--button-fg, #fff);
+.ops-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 14px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline-color, #e8e8e8);
+  border-left: 4px solid var(--link-fg, #417690);
+  background: var(--darkened-bg, #f8f8f8);
+  color: var(--body-fg);
+  text-decoration: none;
 }
-.ops-btn:hover { background: var(--button-hover-bg, #205067); }
-.ops-btn.is-quiet { background: transparent; color: var(--body-fg); border-color: var(--border-color, #ccc); }
-.ops-btn.is-quiet:hover { background: var(--darkened-bg, #eee); }
-.ops-inline { display: inline-flex; gap: 6px; }
+.ops-banner:hover { border-color: var(--link-fg, #417690); }
+.ops-banner-main { display: flex; flex-direction: column; gap: 3px; }
+.ops-banner-main strong { font-size: 15px; }
+.ops-banner-go { font-weight: 700; color: var(--link-fg, #417690); white-space: nowrap; }
+
+/* The database gauge rides along in the banner, so capacity is visible without opening
+   the panel. `.ops-bar` is a div elsewhere; inside the banner it is a span, hence display. */
+.ops-banner-db {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 190px;
+  font-size: 12px;
+  margin-left: auto;
+  color: var(--body-quiet-color, #666);
+}
+.ops-banner-db b { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.ops-banner-db .ops-bar { display: block; margin: 2px 0 0; }
+.ops-banner-db .ops-bar-fill { display: block; }
+.ops-banner-db.tone-warn b { color: var(--tone-warn); }
+.ops-banner-db.tone-bad b { color: var(--tone-bad); }
+
+/* --- panel navigation ------------------------------------------------------ */
+
+.ops-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 18px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--hairline-color, #e8e8e8);
+}
+.ops-nav a {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--body-fg);
+}
+.ops-nav a:hover { background: var(--darkened-bg, #f0f0f0); }
+.ops-nav a.is-current { background: var(--button-bg, #417690); color: var(--button-fg, #fff); }
+.ops-nav-clock { margin-left: auto; }
+
+/* --- summary cards on the hub ---------------------------------------------- */
+
+.ops-card {
+  display: block;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline-color, #e8e8e8);
+  color: var(--body-fg);
+  text-decoration: none;
+}
+.ops-card:hover { border-color: var(--link-fg, #417690); }
+.ops-card h3 { margin-top: 0; }
+
+/* --- product funnel -------------------------------------------------------- */
+
+.ops-funnel { display: flex; flex-direction: column; gap: 10px; }
+.ops-funnel-step { display: grid; grid-template-columns: minmax(0, 1fr) 90px; gap: 4px 12px; align-items: center; }
+.ops-funnel-label { display: flex; flex-direction: column; gap: 1px; font-size: 13px; }
+.ops-funnel-label .ops-muted { font-size: 11px; }
+.ops-funnel-step .ops-bar { grid-column: 1; margin: 0; }
+.ops-funnel-count { grid-column: 2; grid-row: 1 / span 2; text-align: right; font-size: 16px; font-weight: 700; }
+.ops-funnel-count .ops-muted { display: block; font-weight: 400; }
+
+.ops-stuck + .ops-stuck { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--hairline-color, #e8e8e8); }
+.ops-head.is-tight { margin-bottom: 4px; }
+.ops-head.is-tight h3 { margin: 0; }
+
+/* --- product cards --------------------------------------------------------- */
+
+.ops-products { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
+.ops-product {
+  display: flex;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline-color, #e8e8e8);
+  color: var(--body-fg);
+  text-decoration: none;
+}
+.ops-product:hover { border-color: var(--link-fg, #417690); }
+.ops-product img { width: 56px; height: 56px; object-fit: contain; flex: none; background: #fff; border-radius: 4px; }
+.ops-product-noimg {
+  width: 56px; height: 56px; flex: none; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center; text-align: center;
+  font-size: 10px; color: var(--body-quiet-color, #666); background: var(--darkened-bg, #f0f0f0);
+}
+.ops-product-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ops-product-body strong { font-size: 12px; font-weight: 600; line-height: 1.3; }
+.ops-product-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.ops-product-hero { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 14px; }
+.ops-product-hero img { width: 120px; height: 120px; object-fit: contain; background: #fff; border-radius: 6px; flex: none; }
+.ops-product-hero p { margin: 0 0 4px; }
 
 /* --- tags ------------------------------------------------------------------ */
 
@@ -161,6 +259,48 @@
 .ops-feed-title { font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .ops-feed .ops-muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* --- topic board ----------------------------------------------------------- */
+
+.ops-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.ops-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline-color, #e0e0e0);
+  background: var(--darkened-bg, #f8f8f8);
+}
+.ops-chip b { font-size: 13px; color: var(--body-fg); }
+
+.ops-cta {
+  display: inline-block;
+  margin-right: 12px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--button-bg, #417690);
+  color: var(--button-fg, #fff);
+  text-decoration: none;
+}
+.ops-cta:hover { background: var(--button-hover-bg, #205067); color: var(--button-fg, #fff); }
+
+.ops-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ops-table th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--body-quiet-color, #666);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--hairline-color, #e0e0e0);
+}
+.ops-table td { padding: 7px 8px; border-bottom: 1px solid var(--hairline-color, #eee); vertical-align: top; }
+.ops-table tr:last-child td { border-bottom: 0; }
+.ops-table td .ops-muted { display: block; }
+
 /* --- misc ------------------------------------------------------------------ */
 
 .ops-bar { height: 6px; border-radius: 3px; background: var(--hairline-color, #e0e0e0); overflow: hidden; margin: 12px 0 6px; }
@@ -180,8 +320,6 @@
   word-break: break-word;
 }
 .ops-pre.tone-bad { border-left: 3px solid var(--tone-bad); }
-
-.ops-apps { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
 
 .tone-good { color: var(--tone-good); }
 .tone-warn { color: var(--tone-warn); }

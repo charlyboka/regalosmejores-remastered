@@ -45,3 +45,24 @@ GenAI tokens
 Misc:
 - buscar feines
 - SI aixo funciona -> scale to other countries, buscar suport del pato o algu de la feina i mirar si es pot anar a travel. 
+
+
+
+TODOES URGENT:
+- Extreme UI improvement, cards etc. Favicon
+- Get ideas on what functionality could be addded
+- How to increase click rates
+- All SEO tricks
+- GA4 tracking
+- Some results should always be returned
+- Gamification functionality - I'll be lucky
+- Some additional tab/func of top picks or so - for different groups, maybe ranking wiith links or smth? 
+- Pagination and proper presents
+- Quality of the results improve
+- Populate main topics
+- Matching score displayed? 
+- Sell inspiracion
+
+TODOES LATER:
+- Pipeline to clean/update old ASINs - they should be flagged and eventually deleted, could be a 1 or 2 steps pipeline (like a daily garbage collection and potentially one step manual)
+- Can I measure % of sessions that end up in a click to amazon and track them? What is the best path? 

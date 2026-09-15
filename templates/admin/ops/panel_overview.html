@@ -1,0 +1,108 @@
+{% extends "admin/ops/base.html" %}
+
+{% block panel_breadcrumb %}{% endblock %}
+
+{% block panel %}
+
+  {# ------------------------------------------------------------ base de datos #}
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Base de datos</h2>
+      <span class="ops-muted">Heroku Postgres essential-0</span>
+    </div>
+    <div class="ops-stats">
+      {% for s in db.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+    </div>
+    <div class="ops-bar" title="Espacio del plan consumido">
+      <div class="ops-bar-fill tone-{{ db.tone }}" style="width: {{ db.used_pct }}%"></div>
+    </div>
+    <ul class="ops-list">
+      {% for t in db.tables %}
+        <li>
+          <span>{{ t.name }}</span>
+          <span class="ops-muted">{{ t.size }} · {{ t.rows }} filas</span>
+        </li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  {# ---------------------------------------------------------------- estado #}
+  <section class="ops-section">
+    <div class="ops-head">
+      <h2>Estado del sistema</h2>
+      <a href="{% url 'admin:ops_pipelines' %}" class="ops-muted">pipelines y trabajos &rsaquo;</a>
+    </div>
+
+    <div class="ops-stats">
+      {% for s in worker.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+      {% for s in run_stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+    </div>
+
+    <div class="ops-workers">
+      {% for w in worker.workers %}
+        <div class="ops-worker {% if w.is_stale %}is-stale{% endif %}">
+          <span class="ops-dot"></span>
+          <strong>{{ w.name }}</strong>
+          <span class="ops-muted">
+            latido {{ w.at|timesince }} atrás · {{ w.jobs_processed }} trabajos
+            {% if w.current_job %} · ahora: {{ w.current_job.pipeline_key }}{% endif %}
+          </span>
+        </div>
+      {% empty %}
+        <p class="ops-muted">Ningún worker ha arrancado todavía. Nada se está ejecutando.</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="ops-split">
+
+    {# ------------------------------------------------------------ resúmenes #}
+    <section class="ops-section">
+      <div class="ops-head"><h2>Dónde mirar</h2></div>
+
+      <a class="ops-card" href="{% url 'admin:ops_products' %}">
+        <h3>Productos</h3>
+        <div class="ops-stats is-compact">
+          {% for s in catalog.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+        </div>
+      </a>
+
+      <a class="ops-card" href="{% url 'admin:ops_topics' %}">
+        <h3>Temas y términos</h3>
+        <div class="ops-stats is-compact">
+          {% for s in topics.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+        </div>
+      </a>
+
+      <a class="ops-card" href="{% url 'admin:ops_traffic' %}">
+        <h3>Búsqueda y tráfico <span class="ops-muted">· {{ traffic.days }} días</span></h3>
+        <div class="ops-stats is-compact">
+          {% for s in traffic.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+        </div>
+      </a>
+
+      <a class="ops-card" href="{% url 'admin:ops_cost' %}">
+        <h3>Coste y presupuesto</h3>
+        <div class="ops-stats is-compact">
+          {% for s in cost.stats %}{% include "admin/ops/_stat.html" %}{% endfor %}
+        </div>
+      </a>
+    </section>
+
+    {# ----------------------------------------------------------- actividad #}
+    <section class="ops-section">
+      <div class="ops-head">
+        <h2>Actividad</h2>
+        <span class="ops-muted">se actualiza sola cada 15 s</span>
+      </div>
+      <div id="ops-feed"
+           hx-get="{% url 'admin:ops_feed' %}"
+           hx-trigger="every 15s"
+           hx-swap="innerHTML">
+        {% include "admin/ops/_feed.html" %}
+      </div>
+    </section>
+
+  </div>
+
+{% endblock %}
